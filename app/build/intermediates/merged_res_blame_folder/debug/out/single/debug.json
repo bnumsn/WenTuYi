@@ -1,0 +1,18 @@
+[
+    {
+        "merged": "/home/user/.gradle/daemon/8.5/com.wentuyi.ime.app-merged_res-16:/xml_qwerty.xml.flat",
+        "source": "/home/user/.gradle/daemon/8.5/com.wentuyi.ime.app-main-18:/xml/qwerty.xml"
+    },
+    {
+        "merged": "/home/user/.gradle/daemon/8.5/com.wentuyi.ime.app-merged_res-16:/drawable_key_bg.xml.flat",
+        "source": "/home/user/.gradle/daemon/8.5/com.wentuyi.ime.app-main-18:/drawable/key_bg.xml"
+    },
+    {
+        "merged": "/home/user/.gradle/daemon/8.5/com.wentuyi.ime.app-merged_res-16:/xml_method.xml.flat",
+        "source": "/home/user/.gradle/daemon/8.5/com.wentuyi.ime.app-main-18:/xml/method.xml"
+    },
+    {
+        "merged": "com.wentuyi.ime.app-merged_res-16:/layout_input.xml.flat",
+        "source": "com.wentuyi.ime.app-main-18:/layout/input.xml"
+    }
+]

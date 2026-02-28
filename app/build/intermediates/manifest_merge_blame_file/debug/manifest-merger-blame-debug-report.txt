@@ -1,0 +1,69 @@
+1<?xml version="1.0" encoding="utf-8"?>
+2<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+3    package="com.wentuyi.ime"
+4    android:versionCode="1"
+5    android:versionName="1.0" >
+6
+7    <uses-sdk
+8        android:minSdkVersion="21"
+9        android:targetSdkVersion="31" />
+10
+11    <application
+11-->/home/user/wentuyi-ime/app/src/main/AndroidManifest.xml:4:5-19:19
+12        android:allowBackup="true"
+12-->/home/user/wentuyi-ime/app/src/main/AndroidManifest.xml:5:9-35
+13        android:appComponentFactory="androidx.core.app.CoreComponentFactory"
+13-->[androidx.core:core:1.7.0] /home/user/.gradle/caches/transforms-3/dffbeecbcc4ba10fa3ec8f298237f8c4/transformed/core-1.7.0/AndroidManifest.xml:24:18-86
+14        android:debuggable="true"
+15        android:extractNativeLibs="true"
+16        android:label="文图易输入法" >
+16-->/home/user/wentuyi-ime/app/src/main/AndroidManifest.xml:6:9-31
+17        <service
+17-->/home/user/wentuyi-ime/app/src/main/AndroidManifest.xml:7:9-18:19
+18            android:name="com.wentuyi.ime.WentuyiIME"
+18-->/home/user/wentuyi-ime/app/src/main/AndroidManifest.xml:8:13-39
+19            android:exported="true"
+19-->/home/user/wentuyi-ime/app/src/main/AndroidManifest.xml:11:13-36
+20            android:label="文图易输入法"
+20-->/home/user/wentuyi-ime/app/src/main/AndroidManifest.xml:9:13-35
+21            android:permission="android.permission.BIND_INPUT_METHOD" >
+21-->/home/user/wentuyi-ime/app/src/main/AndroidManifest.xml:10:13-70
+22            <intent-filter>
+22-->/home/user/wentuyi-ime/app/src/main/AndroidManifest.xml:12:13-14:29
+23                <action android:name="android.view.InputMethod" />
+23-->/home/user/wentuyi-ime/app/src/main/AndroidManifest.xml:13:17-67
+23-->/home/user/wentuyi-ime/app/src/main/AndroidManifest.xml:13:25-64
+24            </intent-filter>
+25
+26            <meta-data
+26-->/home/user/wentuyi-ime/app/src/main/AndroidManifest.xml:15:13-17:50
+27                android:name="android.view.im"
+27-->/home/user/wentuyi-ime/app/src/main/AndroidManifest.xml:16:17-47
+28                android:resource="@xml/method" />
+28-->/home/user/wentuyi-ime/app/src/main/AndroidManifest.xml:17:17-47
+29        </service>
+30
+31        <provider
+31-->[androidx.emoji2:emoji2:1.0.0] /home/user/.gradle/caches/transforms-3/6a8b067d31c415aa9fff973d9505b393/transformed/jetified-emoji2-1.0.0/AndroidManifest.xml:26:9-34:20
+32            android:name="androidx.startup.InitializationProvider"
+32-->[androidx.emoji2:emoji2:1.0.0] /home/user/.gradle/caches/transforms-3/6a8b067d31c415aa9fff973d9505b393/transformed/jetified-emoji2-1.0.0/AndroidManifest.xml:27:13-67
+33            android:authorities="com.wentuyi.ime.androidx-startup"
+33-->[androidx.emoji2:emoji2:1.0.0] /home/user/.gradle/caches/transforms-3/6a8b067d31c415aa9fff973d9505b393/transformed/jetified-emoji2-1.0.0/AndroidManifest.xml:28:13-68
+34            android:exported="false" >
+34-->[androidx.emoji2:emoji2:1.0.0] /home/user/.gradle/caches/transforms-3/6a8b067d31c415aa9fff973d9505b393/transformed/jetified-emoji2-1.0.0/AndroidManifest.xml:29:13-37
+35            <meta-data
+35-->[androidx.emoji2:emoji2:1.0.0] /home/user/.gradle/caches/transforms-3/6a8b067d31c415aa9fff973d9505b393/transformed/jetified-emoji2-1.0.0/AndroidManifest.xml:31:13-33:52
+36                android:name="androidx.emoji2.text.EmojiCompatInitializer"
+36-->[androidx.emoji2:emoji2:1.0.0] /home/user/.gradle/caches/transforms-3/6a8b067d31c415aa9fff973d9505b393/transformed/jetified-emoji2-1.0.0/AndroidManifest.xml:32:17-75
+37                android:value="androidx.startup" />
+37-->[androidx.emoji2:emoji2:1.0.0] /home/user/.gradle/caches/transforms-3/6a8b067d31c415aa9fff973d9505b393/transformed/jetified-emoji2-1.0.0/AndroidManifest.xml:33:17-49
+38            <meta-data
+38-->[androidx.lifecycle:lifecycle-process:2.4.0] /home/user/.gradle/caches/transforms-3/5d2f5f1eb1054f8128b1d1cb60b688c0/transformed/jetified-lifecycle-process-2.4.0/AndroidManifest.xml:31:13-33:52
+39                android:name="androidx.lifecycle.ProcessLifecycleInitializer"
+39-->[androidx.lifecycle:lifecycle-process:2.4.0] /home/user/.gradle/caches/transforms-3/5d2f5f1eb1054f8128b1d1cb60b688c0/transformed/jetified-lifecycle-process-2.4.0/AndroidManifest.xml:32:17-78
+40                android:value="androidx.startup" />
+40-->[androidx.lifecycle:lifecycle-process:2.4.0] /home/user/.gradle/caches/transforms-3/5d2f5f1eb1054f8128b1d1cb60b688c0/transformed/jetified-lifecycle-process-2.4.0/AndroidManifest.xml:33:17-49
+41        </provider>
+42    </application>
+43
+44</manifest>
