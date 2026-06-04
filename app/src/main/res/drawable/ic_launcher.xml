@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="48"
+    android:viewportHeight="48">
+    <path
+        android:fillColor="@color/wty_accent"
+        android:pathData="M8,6h32c1.1,0 2,0.9 2,2v32c0,1.1 -0.9,2 -2,2H8c-1.1,0 -2,-0.9 -2,-2V8c0,-1.1 0.9,-2 2,-2z" />
+    <path
+        android:fillColor="@color/wty_panel"
+        android:pathData="M14,13h20v4H14zM14,21h15v4H14zM14,29h20v4H14z" />
+    <path
+        android:fillColor="@color/wty_accent_dark"
+        android:pathData="M31,20h5v5h-5zM31,27h5v5h-5z" />
+</vector>

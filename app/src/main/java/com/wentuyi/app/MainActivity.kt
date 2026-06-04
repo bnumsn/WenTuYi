@@ -1,0 +1,187 @@
+package com.wentuyi.app
+
+import android.app.Activity
+import android.content.Context
+import android.content.Intent
+import android.graphics.Color
+import android.os.Bundle
+import android.provider.Settings
+import android.util.TypedValue
+import android.view.View
+import android.view.ViewGroup
+import android.view.inputmethod.InputMethodManager
+import android.widget.Button
+import android.widget.FrameLayout
+import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.TextView
+
+/**
+ * Hub activity. The previous 999-line [MainActivity] has been split into:
+ *   • this file (≈ 150 lines) — navigation + status,
+ *   • [KeyManagementActivity] — identity, contacts, legacy passphrase,
+ *   • [DecryptActivity] — incoming-intent + pick-image decryption,
+ *   • [ScanActivity] — generic QR scanner that routes to the right next-step.
+ *
+ * Pre-existing share-intent filters (ACTION_SEND etc.) still target [MainActivity] in
+ * the manifest for backwards compatibility — they're forwarded to [DecryptActivity]
+ * on arrival.
+ */
+class MainActivity : Activity() {
+
+    private lateinit var statusView: TextView
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        // First-launch tutorial — runs once. Share intents (ACTION_SEND/MULTIPLE) still
+        // go through the forwarder so receiving an encrypted image isn't blocked by setup.
+        if (!OnboardingActivity.isDone(this) && !isSharedIntent(intent)) {
+            startActivity(Intent(this, OnboardingActivity::class.java))
+            finish()
+            return
+        }
+        buildUi()
+        forwardIfSharedIntent(intent)
+    }
+
+    private fun isSharedIntent(intent: Intent?): Boolean =
+        intent?.action == Intent.ACTION_SEND || intent?.action == Intent.ACTION_SEND_MULTIPLE
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        forwardIfSharedIntent(intent)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        refreshStatus()
+    }
+
+    private fun forwardIfSharedIntent(intent: Intent?) {
+        if (intent == null) return
+        when (intent.action) {
+            Intent.ACTION_SEND, Intent.ACTION_SEND_MULTIPLE -> {
+                val forward = Intent(this, DecryptActivity::class.java).apply {
+                    action = intent.action
+                    intent.type?.let { type = it }
+                    intent.extras?.let { putExtras(it) }
+                    intent.clipData?.let { clipData = it }
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                startActivity(forward)
+                finish()
+            }
+        }
+    }
+
+    private fun buildUi() {
+        val scroll = ScrollView(this).apply {
+            isFillViewport = true
+            setBackgroundColor(Color.rgb(247, 248, 243))
+        }
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(22), dp(18), dp(22), dp(22))
+        }
+        scroll.addView(root, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+
+        root.addView(textView("文图易", 30f, true), matchWrap())
+
+        statusView = textView("", 14f, false).apply { setTextColor(Color.rgb(95, 102, 90)) }
+        root.addView(statusView, matchWrapWithTop(8))
+
+        addPrimaryButton(root, "我的身份码 / 共享密钥") {
+            startActivity(Intent(this, KeyManagementActivity::class.java))
+        }
+        addPrimaryButton(root, "扫码 / 导入二维码") {
+            startActivity(Intent(this, ScanActivity::class.java))
+        }
+        addPrimaryButton(root, "解密接收的内容") {
+            startActivity(Intent(this, DecryptActivity::class.java))
+        }
+
+        val sysRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        root.addView(sysRow, matchWrapWithTop(18))
+        sysRow.addView(secondaryButton("输入法设置") {
+            startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS))
+        }, weightWrap(1))
+        sysRow.addView(secondaryButton("选择键盘") {
+            (getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager)
+                ?.showInputMethodPicker()
+        }, weightWrapWithLeft(1, 10))
+
+        if (BuildConfig.DEBUG) {
+            addSecondaryButton(root, "键盘本地测试") {
+                startActivity(Intent(this, KeyboardTestActivity::class.java))
+            }
+        }
+        setContentView(scroll)
+    }
+
+    private fun refreshStatus() {
+        statusView.text = try {
+            val identity = KeyExchange.loadIdentity(this)
+            val hasPassphrase = WentuyiSettings.hasSavedPassphrase(this)
+            val pieces = ArrayList<String>()
+            if (identity != null) pieces += "身份码：${identity.fingerprint}"
+            if (hasPassphrase) pieces += "共享密钥已设置"
+            if (pieces.isEmpty() && WentuyiSettings.isUsingDefaultPassphrase(this))
+                pieces += "当前使用开发默认密钥"
+            if (pieces.isEmpty()) pieces += "尚未配置密钥，请先打开「我的身份码」"
+            pieces.joinToString("  ·  ")
+        } catch (e: RuntimeException) {
+            e.message ?: "密钥状态未知"
+        }
+    }
+
+    // ─── Helpers ────────────────────────────────────────────────────────────
+
+    private fun addPrimaryButton(parent: LinearLayout, label: String, onClick: () -> Unit) {
+        val button = Button(this).apply {
+            text = label
+            isAllCaps = false
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+            setOnClickListener { onClick() }
+        }
+        parent.addView(button, matchWrapWithTop(12))
+    }
+
+    private fun addSecondaryButton(parent: LinearLayout, label: String, onClick: () -> Unit) {
+        parent.addView(secondaryButton(label, onClick), matchWrapWithTop(10))
+    }
+
+    private fun secondaryButton(label: String, onClick: () -> Unit): Button =
+        Button(this).apply {
+            text = label
+            isAllCaps = false
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            setOnClickListener { onClick() }
+        }
+
+    private fun textView(text: String, sizeSp: Float, bold: Boolean): TextView =
+        TextView(this).apply {
+            this.text = text
+            setTextColor(Color.rgb(21, 24, 18))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, sizeSp)
+            if (bold) setTypeface(typeface, android.graphics.Typeface.BOLD)
+        }
+
+    private fun matchWrap(): LinearLayout.LayoutParams =
+        LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT)
+
+    private fun matchWrapWithTop(topDp: Int): LinearLayout.LayoutParams =
+        matchWrap().apply { topMargin = dp(topDp) }
+
+    private fun weightWrap(weight: Int): LinearLayout.LayoutParams =
+        LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, weight.toFloat())
+
+    private fun weightWrapWithLeft(weight: Int, leftDp: Int): LinearLayout.LayoutParams =
+        weightWrap(weight).apply { leftMargin = dp(leftDp) }
+
+    private fun dp(value: Int): Int = Math.round(
+        TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, value.toFloat(), resources.displayMetrics)
+    )
+}

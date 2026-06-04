@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component>
+  <name>org.freedesktop.IBus.Wentuyi</name>
+  <description>Wentuyi secure text input</description>
+  <exec>/usr/bin/env WENTUYI_CLI=/usr/local/lib/wentuyi/desktop-cli/bin/desktop-cli python3 /usr/local/lib/wentuyi/ibus/wentuyi_ibus.py --ibus</exec>
+  <version>0.5.1</version>
+  <author>Wentuyi</author>
+  <license>MIT</license>
+  <homepage>https://example.invalid/wentuyi</homepage>
+  <textdomain>ibus-wentuyi</textdomain>
+  <engines>
+    <engine>
+      <name>wentuyi</name>
+      <longname>Wentuyi</longname>
+      <description>Wentuyi secure text input</description>
+      <language>zh</language>
+      <license>MIT</license>
+      <author>Wentuyi</author>
+      <layout>us</layout>
+      <rank>80</rank>
+    </engine>
+  </engines>
+</component>

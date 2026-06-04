@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+CLI="$REPO_ROOT/desktop-cli/build/install/desktop-cli/bin/desktop-cli"
+
+if [[ ! -x "$CLI" ]]; then
+  (cd "$REPO_ROOT" && ./gradlew :desktop-cli:installDist >/dev/null)
+fi
+
+exec "$CLI" "$@"

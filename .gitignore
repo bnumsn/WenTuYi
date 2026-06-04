@@ -1,0 +1,13 @@
+.gradle/
+build/
+app/build/
+local.properties
+*.iml
+/.idea/
+
+# Local smoke-test outputs
+/*.peek.out
+/*.peek.log
+/*.peek.stderr
+/wentuyi-*.out
+/wentuyi-win-ver.txt

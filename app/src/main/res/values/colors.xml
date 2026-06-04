@@ -1,0 +1,6 @@
+<resources>
+    <color name="wty_surface">#F7F8F3</color>
+    <color name="wty_panel">#FFFFFF</color>
+    <color name="wty_accent">#207A59</color>
+    <color name="wty_accent_dark">#14573F</color>
+</resources>
