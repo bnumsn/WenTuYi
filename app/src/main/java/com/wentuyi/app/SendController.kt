@@ -51,6 +51,12 @@ class SendController(
         const val MAX_FIELD_CHARS = 100_000
     }
 
+    private enum class TextReplaceResult {
+        COMMITTED,
+        SOURCE_CHANGED,
+        FAILED,
+    }
+
     sealed class SendTarget {
         object SharedPassphrase : SendTarget()
         data class Contact(
@@ -90,11 +96,12 @@ class SendController(
         if (text.isEmpty()) { onStatus("没有文字"); return }
         val anchor = captureAnchor() ?: run { onStatus("当前输入框不可写"); return }
         val target = resolveSendTarget()
+        rejectUnverifiedTarget(target)?.let { onStatus(it); return }
         onStatus(progressLabel("正在加密文字...", target))
         scope.launch {
             try {
                 val payload = withContext(Dispatchers.Default) { encryptText(text, target) }
-                deliverEncryptedText(payload, anchor, target)
+                deliverEncryptedText(payload, anchor, target, text)
             } catch (e: Exception) {
                 onStatus("加密失败：${e.userMessage()}")
             }
@@ -105,6 +112,7 @@ class SendController(
         if (text.isEmpty()) { onStatus("没有文字"); return }
         val anchor = captureAnchor() ?: run { onStatus("当前输入框不可写"); return }
         val target = resolveSendTarget()
+        rejectUnverifiedTarget(target)?.let { onStatus(it); return }
         onStatus(progressLabel("正在生成加密二维码...", target))
         scope.launch {
             try {
@@ -156,31 +164,51 @@ class SendController(
 
     // ─── Delivery primitives ─────────────────────────────────────────────────
 
-    private fun deliverEncryptedText(payload: String, anchor: TargetAnchor, target: SendTarget) {
+    private fun deliverEncryptedText(
+        payload: String,
+        anchor: TargetAnchor,
+        target: SendTarget,
+        sourceText: String,
+    ) {
         val targetLabel = targetLabel(target)
         if (!anchorStillCurrent(anchor)) { onStatus("目标已切换，未写入"); return }
         val connection = service.currentInputConnection ?: run { onStatus("当前输入框不可写"); return }
-        val committed = replaceVisibleText(connection, payload)
-        onStatus(if (committed) "已写入加密文字 ($targetLabel)" else "写入失败")
+        when (replaceVisibleTextIfMatches(connection, sourceText, payload)) {
+            TextReplaceResult.COMMITTED -> onStatus("已写入加密文字 ($targetLabel)")
+            TextReplaceResult.SOURCE_CHANGED -> onStatus("输入内容已变化，未写入")
+            TextReplaceResult.FAILED -> onStatus("写入失败")
+        }
     }
 
-    private fun replaceVisibleText(connection: InputConnection, replacement: String): Boolean =
+    private fun replaceVisibleTextIfMatches(
+        connection: InputConnection,
+        sourceText: String,
+        replacement: String,
+    ): TextReplaceResult =
         runCatching {
             connection.beginBatchEdit()
             try {
                 val selected = connection.getSelectedText(0)
                 if (!selected.isNullOrEmpty()) {
-                    connection.commitText(replacement, 1)
+                    if (selected.toString() != sourceText) return@runCatching TextReplaceResult.SOURCE_CHANGED
+                    if (connection.commitText(replacement, 1)) TextReplaceResult.COMMITTED
+                    else TextReplaceResult.FAILED
                 } else {
-                    val before = connection.getTextBeforeCursor(MAX_FIELD_CHARS, 0)?.length ?: 0
-                    val after = connection.getTextAfterCursor(MAX_FIELD_CHARS, 0)?.length ?: 0
-                    if (before > 0 || after > 0) connection.deleteSurroundingText(before, after)
-                    connection.commitText(replacement, 1)
+                    val before = connection.getTextBeforeCursor(MAX_FIELD_CHARS, 0)?.toString().orEmpty()
+                    val after = connection.getTextAfterCursor(MAX_FIELD_CHARS, 0)?.toString().orEmpty()
+                    if (before + after != sourceText) return@runCatching TextReplaceResult.SOURCE_CHANGED
+                    if (before.isNotEmpty() || after.isNotEmpty()) {
+                        if (!connection.deleteSurroundingText(before.length, after.length)) {
+                            return@runCatching TextReplaceResult.FAILED
+                        }
+                    }
+                    if (connection.commitText(replacement, 1)) TextReplaceResult.COMMITTED
+                    else TextReplaceResult.FAILED
                 }
             } finally {
                 connection.endBatchEdit()
             }
-        }.getOrDefault(false)
+        }.getOrDefault(TextReplaceResult.FAILED)
 
     /**
      * Direct send only — no clipboard. Inline-commit the image(s) into the focused
@@ -369,6 +397,13 @@ class SendController(
         is SendTarget.Contact ->
             if (target.contact.verified) target.contact.name else "${target.contact.name}（未验证）"
     }
+
+    private fun rejectUnverifiedTarget(target: SendTarget): String? =
+        if (target is SendTarget.Contact && !target.contact.verified) {
+            "联系人 ${target.contact.name} 未验证；请先到主 App 核对 SAS 后再发送"
+        } else {
+            null
+        }
 
     private fun progressLabel(base: String, target: SendTarget): String = when (target) {
         is SendTarget.Contact ->

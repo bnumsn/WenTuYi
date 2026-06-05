@@ -488,9 +488,6 @@ class TextImageImeService : InputMethodService() {
         }
         val identity = runCatching { KeyExchange.loadIdentity(this) }.getOrNull()
             ?: return SendController.SendTarget.SharedPassphrase
-        if (!contact.verified) {
-            toast("未验证联系人：${contact.name}。发送敏感内容前请先核对 SAS。")
-        }
         return SendController.SendTarget.Contact(contact, identity)
     }
 
