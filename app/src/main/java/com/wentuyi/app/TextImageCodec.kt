@@ -440,6 +440,7 @@ object TextImageCodec {
     }
 
     private fun payloadLabel(payload: String): String = when {
+        payload.startsWith(SecurePayloadCodec.PREFIX_V4) -> "WTY4"
         payload.startsWith(SecurePayloadCodec.PREFIX_V3) -> "WTY3"
         payload.startsWith(SecurePayloadCodec.PREFIX_V2) -> "WTY2"
         else -> "WTY"

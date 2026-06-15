@@ -18,12 +18,19 @@ object CryptoUtils {
 
     fun randomBytes(size: Int): ByteArray = ByteArray(size).also { random.nextBytes(it) }
 
-    fun argon2id(passphrase: ByteArray, salt: ByteArray, outLen: Int = 32): ByteArray {
+    fun argon2id(
+        passphrase: ByteArray,
+        salt: ByteArray,
+        outLen: Int = 32,
+        memoryKb: Int = ARGON2_MEMORY_KB,
+        iterations: Int = ARGON2_ITERATIONS,
+        parallelism: Int = ARGON2_PARALLELISM,
+    ): ByteArray {
         val params = Argon2Parameters.Builder(Argon2Parameters.ARGON2_id)
             .withVersion(Argon2Parameters.ARGON2_VERSION_13)
-            .withMemoryAsKB(ARGON2_MEMORY_KB)
-            .withIterations(ARGON2_ITERATIONS)
-            .withParallelism(ARGON2_PARALLELISM)
+            .withMemoryAsKB(memoryKb)
+            .withIterations(iterations)
+            .withParallelism(parallelism)
             .withSalt(salt)
             .build()
         val gen = Argon2BytesGenerator()

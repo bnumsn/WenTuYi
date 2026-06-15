@@ -14,6 +14,7 @@ object SecurePayloadCodec {
     const val PREFIX_V1 = "WTY1:"
     const val PREFIX_V2 = "WTY2:"
     const val PREFIX_V3 = "WTY3:"
+    const val PREFIX_V4 = "WTY4:"
 
     const val TYPE_TEXT = 1
     const val TYPE_IMAGE = 2
@@ -29,6 +30,20 @@ object SecurePayloadCodec {
     private const val GCM_TAG_BITS = 128
     private const val PBKDF2_ITERATIONS_V2 = 120_000
     private const val V3_HEADER_LEN = 1 + 1 + 1 + SALT_BYTES + IV_BYTES
+
+    // v4 default Argon2id (m=64 MiB, t=4, p=1), written into the header for forward tuning.
+    const val ARGON_MEM_KB_DEFAULT = 64 * 1024
+    const val ARGON_ITER_DEFAULT = 4
+    const val ARGON_PAR_DEFAULT = 1
+    private const val ARGON_MEM_KB_MIN = 8 * 1024
+    private const val ARGON_MEM_KB_MAX = 256 * 1024
+    private const val ARGON_ITER_MIN = 1
+    private const val ARGON_ITER_MAX = 10
+    private const val ARGON_PAR_MIN = 1
+    private const val ARGON_PAR_MAX = 4
+    private const val V4_SALT_OFFSET = 9
+    private const val V4_IV_OFFSET = V4_SALT_OFFSET + SALT_BYTES
+    private const val V4_HEADER_LEN = V4_IV_OFFSET + IV_BYTES
 
     private val SESSION_HKDF_INFO = "WTY3-session-v1".toByteArray(StandardCharsets.US_ASCII)
     private val IMAGE_PAGE_MAGIC = "WTYIPG1".toByteArray(StandardCharsets.US_ASCII)
@@ -65,14 +80,18 @@ object SecurePayloadCodec {
     fun decryptEnvelopeWithSessionKey(payload: String?, sessionKey: ByteArray): DecryptedPayload {
         require(sessionKey.size == KEY_BYTES) { "session key must be 32 bytes" }
         if (payload == null) throw GeneralSecurityException("not a Wentuyi payload")
-        if (!payload.startsWith(PREFIX_V3)) throw GeneralSecurityException("session key only supports WTY3")
-        return decryptV3(payload, sessionKey = sessionKey)
+        return when {
+            payload.startsWith(PREFIX_V4) -> decryptV4(payload, sessionKey = sessionKey)
+            payload.startsWith(PREFIX_V3) -> decryptV3(payload, sessionKey = sessionKey)
+            else -> throw GeneralSecurityException("session key only supports WTY3/WTY4")
+        }
     }
 
     fun decryptEnvelope(payload: String?, passphrase: String): DecryptedPayload {
         requirePassphrase(passphrase)
         if (payload == null) throw GeneralSecurityException("not a Wentuyi payload")
         return when {
+            payload.startsWith(PREFIX_V4) -> decryptV4(payload, passphrase = passphrase)
             payload.startsWith(PREFIX_V3) -> decryptV3(payload, passphrase = passphrase)
             payload.startsWith(PREFIX_V2) -> decryptV2(payload, passphrase)
             payload.startsWith(PREFIX_V1) -> DecryptedPayload(
@@ -84,11 +103,17 @@ object SecurePayloadCodec {
     }
 
     fun isPayload(payload: String?): Boolean = payload != null &&
-        (payload.startsWith(PREFIX_V1) || payload.startsWith(PREFIX_V2) || payload.startsWith(PREFIX_V3))
+        (payload.startsWith(PREFIX_V1) || payload.startsWith(PREFIX_V2) ||
+            payload.startsWith(PREFIX_V3) || payload.startsWith(PREFIX_V4))
 
-    fun peekV3KeyMode(payload: String?): Byte? {
-        if (payload == null || !payload.startsWith(PREFIX_V3)) return null
-        val packed = try { Encoding.b64Decode(payload.substring(PREFIX_V3.length)) }
+    fun peekKeyMode(payload: String?): Byte? {
+        val prefix = when {
+            payload == null -> return null
+            payload.startsWith(PREFIX_V4) -> PREFIX_V4
+            payload.startsWith(PREFIX_V3) -> PREFIX_V3
+            else -> return null
+        }
+        val packed = try { Encoding.b64Decode(payload.substring(prefix.length)) }
             catch (e: IllegalArgumentException) { return null }
         if (packed.size < 3) return null
         return packed[2]
@@ -113,17 +138,23 @@ object SecurePayloadCodec {
         }
         val salt = CryptoUtils.randomBytes(SALT_BYTES)
         val iv = CryptoUtils.randomBytes(IV_BYTES)
+        val memKb = if (mode == KEY_MODE_PASSPHRASE) ARGON_MEM_KB_DEFAULT else 0
+        val iter = if (mode == KEY_MODE_PASSPHRASE) ARGON_ITER_DEFAULT else 0
+        val par = if (mode == KEY_MODE_PASSPHRASE) ARGON_PAR_DEFAULT else 0
         val aesKey = when (mode) {
-            KEY_MODE_PASSPHRASE -> CryptoUtils.argon2id(key, salt, KEY_BYTES)
+            KEY_MODE_PASSPHRASE -> CryptoUtils.argon2id(key, salt, KEY_BYTES, memKb, iter, par)
             else -> CryptoUtils.hkdfSha256(key, salt, SESSION_HKDF_INFO, KEY_BYTES)
         }
         try {
-            val header = ByteArray(V3_HEADER_LEN).apply {
-                this[0] = 0x03
+            val header = ByteArray(V4_HEADER_LEN).apply {
+                this[0] = 0x04
                 this[1] = type.toByte()
                 this[2] = mode
-                System.arraycopy(salt, 0, this, 3, SALT_BYTES)
-                System.arraycopy(iv, 0, this, 3 + SALT_BYTES, IV_BYTES)
+                writeInt(this, 3, memKb)
+                this[7] = iter.toByte()
+                this[8] = par.toByte()
+                System.arraycopy(salt, 0, this, V4_SALT_OFFSET, SALT_BYTES)
+                System.arraycopy(iv, 0, this, V4_IV_OFFSET, IV_BYTES)
             }
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(aesKey, "AES"), GCMParameterSpec(GCM_TAG_BITS, iv))
@@ -132,10 +163,58 @@ object SecurePayloadCodec {
             val packed = ByteArray(header.size + ciphertext.size)
             System.arraycopy(header, 0, packed, 0, header.size)
             System.arraycopy(ciphertext, 0, packed, header.size, ciphertext.size)
-            return PREFIX_V3 + Encoding.b64(packed)
+            return PREFIX_V4 + Encoding.b64(packed)
         } finally {
             CryptoUtils.wipe(aesKey)
             if (mode == KEY_MODE_PASSPHRASE) CryptoUtils.wipe(key)
+        }
+    }
+
+    private fun decryptV4(payload: String, passphrase: String? = null, sessionKey: ByteArray? = null): DecryptedPayload {
+        val packed = Encoding.b64Decode(payload.substring(PREFIX_V4.length))
+        if (packed.size <= V4_HEADER_LEN) throw GeneralSecurityException("payload incomplete")
+        if (packed[0].toInt() and 0xFF != 0x04) throw GeneralSecurityException("unsupported version")
+        val type = packed[1].toInt() and 0xFF
+        if (type !in 1..4) throw GeneralSecurityException("unsupported type")
+        val mode = packed[2]
+        val salt = Arrays.copyOfRange(packed, V4_SALT_OFFSET, V4_SALT_OFFSET + SALT_BYTES)
+        val iv = Arrays.copyOfRange(packed, V4_IV_OFFSET, V4_IV_OFFSET + IV_BYTES)
+        val ciphertext = Arrays.copyOfRange(packed, V4_HEADER_LEN, packed.size)
+        val header = Arrays.copyOfRange(packed, 0, V4_HEADER_LEN)
+        var passphraseBytes: ByteArray? = null
+        val aesKey = when (mode) {
+            KEY_MODE_PASSPHRASE -> {
+                if (passphrase == null) throw GeneralSecurityException("missing passphrase")
+                val memKb = readInt(packed, 3)
+                val iter = packed[7].toInt() and 0xFF
+                val par = packed[8].toInt() and 0xFF
+                if (memKb !in ARGON_MEM_KB_MIN..ARGON_MEM_KB_MAX ||
+                    iter !in ARGON_ITER_MIN..ARGON_ITER_MAX ||
+                    par !in ARGON_PAR_MIN..ARGON_PAR_MAX) {
+                    throw GeneralSecurityException("argon2 params out of safe range")
+                }
+                passphraseBytes = passphrase.toByteArray(StandardCharsets.UTF_8)
+                CryptoUtils.argon2id(passphraseBytes, salt, KEY_BYTES, memKb, iter, par)
+            }
+            KEY_MODE_SESSION_KEY -> {
+                if (sessionKey == null) throw GeneralSecurityException("session key required")
+                CryptoUtils.hkdfSha256(sessionKey, salt, SESSION_HKDF_INFO, KEY_BYTES)
+            }
+            else -> throw GeneralSecurityException("unknown key mode")
+        }
+        try {
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(aesKey, "AES"), GCMParameterSpec(GCM_TAG_BITS, iv))
+            cipher.updateAAD(header)
+            val plain = cipher.doFinal(ciphertext)
+            return when (type) {
+                TYPE_IMAGE_PAGE -> unpackImagePage(plain)
+                TYPE_IMAGE_CHUNK -> unpackImageChunk(plain)
+                else -> DecryptedPayload(type, plain)
+            }
+        } finally {
+            CryptoUtils.wipe(aesKey)
+            CryptoUtils.wipe(passphraseBytes)
         }
     }
 

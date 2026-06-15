@@ -31,24 +31,43 @@ class WentuyiSmokeTests {
     private val context: Context get() = InstrumentationRegistry.getInstrumentation().targetContext
     private val random = SecureRandom()
 
-    // ─── v3 cryptographic core ──────────────────────────────────────────────
+    // ─── v4 cryptographic core (current default) ────────────────────────────
 
-    @Test fun v3_text_round_trip() {
+    @Test fun v4_text_round_trip() {
         val payload = SecurePayloadCodec.encryptTextToPayload(SOURCE, PASSPHRASE)
-        assertTrue("v3 prefix", payload.startsWith(SecurePayloadCodec.PREFIX_V3))
+        assertTrue("v4 prefix", payload.startsWith(SecurePayloadCodec.PREFIX_V4))
         assertEquals(SOURCE, SecurePayloadCodec.decryptPayload(payload, PASSPHRASE))
     }
 
-    @Test fun v3_aad_tamper_rejected() {
+    @Test fun v4_aad_tamper_rejected() {
         val payload = SecurePayloadCodec.encryptTextToPayload(SOURCE, PASSPHRASE)
-        // Flip the type byte (index 1 in the v3 packed body).
-        val packed = Base64.decode(payload.substring(SecurePayloadCodec.PREFIX_V3.length), Base64.NO_WRAP)
+        // Flip the type byte (index 1 in the v4 packed body) — AAD-bound, must reject.
+        val packed = Base64.decode(payload.substring(SecurePayloadCodec.PREFIX_V4.length), Base64.NO_WRAP)
         packed[1] = (packed[1].toInt() xor 0xFF).toByte()
-        val tampered = SecurePayloadCodec.PREFIX_V3 + Base64.encodeToString(packed, Base64.NO_WRAP)
+        val tampered = SecurePayloadCodec.PREFIX_V4 + Base64.encodeToString(packed, Base64.NO_WRAP)
         try {
             SecurePayloadCodec.decryptPayload(tampered, PASSPHRASE)
             fail("AAD tamper must reject")
         } catch (e: GeneralSecurityException) { /* expected */ }
+    }
+
+    @Test fun v4_rejects_out_of_range_argon_params() {
+        val payload = SecurePayloadCodec.encryptTextToPayload(SOURCE, PASSPHRASE)
+        val packed = Base64.decode(payload.substring(SecurePayloadCodec.PREFIX_V4.length), Base64.NO_WRAP)
+        // memKb (offset 3..6) → 0xFFFFFFFF: must fail fast at the clamp, no multi-GiB alloc.
+        packed[3] = 0xFF.toByte(); packed[4] = 0xFF.toByte(); packed[5] = 0xFF.toByte(); packed[6] = 0xFF.toByte()
+        val tampered = SecurePayloadCodec.PREFIX_V4 + Base64.encodeToString(packed, Base64.NO_WRAP)
+        try {
+            SecurePayloadCodec.decryptPayload(tampered, PASSPHRASE)
+            fail("out-of-range argon params must reject")
+        } catch (e: GeneralSecurityException) { /* expected */ }
+    }
+
+    @Test fun v3_back_compat_decrypt() {
+        // v3 ciphertext (pre-v0.6) must still decrypt after the v4 switch.
+        val v3 = buildV3Envelope("legacy v3 文图易", PASSPHRASE)
+        assertTrue("v3 prefix", v3.startsWith(SecurePayloadCodec.PREFIX_V3))
+        assertEquals("legacy v3 文图易", SecurePayloadCodec.decryptPayload(v3, PASSPHRASE))
     }
 
     @Test fun v3_wrong_key_rejected() {
@@ -330,6 +349,29 @@ class WentuyiSmokeTests {
         System.arraycopy(iv, 0, packed, 2 + salt.size, iv.size)
         System.arraycopy(ct, 0, packed, 2 + salt.size + iv.size, ct.size)
         return SecurePayloadCodec.PREFIX_V2 + Base64.encodeToString(packed, Base64.NO_WRAP)
+    }
+
+    /** Builds a genuine pre-v0.6 WTY3 envelope (Argon2 m=32/t=3, 31-byte AAD header). */
+    private fun buildV3Envelope(text: String, passphrase: String): String {
+        val salt = ByteArray(16).also { random.nextBytes(it) }
+        val iv = ByteArray(12).also { random.nextBytes(it) }
+        val key = CryptoUtils.argon2id(passphrase.toByteArray(Charsets.UTF_8), salt, 32)
+        val header = ByteArray(31)
+        header[0] = 0x03
+        header[1] = SecurePayloadCodec.TYPE_TEXT.toByte()
+        header[2] = SecurePayloadCodec.KEY_MODE_PASSPHRASE
+        System.arraycopy(salt, 0, header, 3, 16)
+        System.arraycopy(iv, 0, header, 19, 12)
+        val cipher = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(javax.crypto.Cipher.ENCRYPT_MODE,
+            javax.crypto.spec.SecretKeySpec(key, "AES"),
+            javax.crypto.spec.GCMParameterSpec(128, iv))
+        cipher.updateAAD(header)
+        val ct = cipher.doFinal(text.toByteArray(Charsets.UTF_8))
+        val packed = ByteArray(header.size + ct.size)
+        System.arraycopy(header, 0, packed, 0, header.size)
+        System.arraycopy(ct, 0, packed, header.size, ct.size)
+        return SecurePayloadCodec.PREFIX_V3 + Base64.encodeToString(packed, Base64.NO_WRAP)
     }
 
     private fun jpegRoundTrip(bitmap: android.graphics.Bitmap, quality: Int): android.graphics.Bitmap {

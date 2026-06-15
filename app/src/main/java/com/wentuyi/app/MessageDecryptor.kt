@@ -39,7 +39,7 @@ object MessageDecryptor {
         if (!SecurePayloadCodec.isPayload(payload)) {
             return Result.Failure(Reason.UNKNOWN_FORMAT, "不是文图易加密内容")
         }
-        return if (SecurePayloadCodec.peekV3KeyMode(payload) ==
+        return if (SecurePayloadCodec.peekKeyMode(payload) ==
             SecurePayloadCodec.KEY_MODE_SESSION_KEY) {
             decryptWithAnyContact(context, payload)
         } else {

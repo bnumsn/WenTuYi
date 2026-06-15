@@ -11,8 +11,8 @@ class SharedProtocolTest {
     fun passphrasePayloadRoundTripsAndRejectsWrongKey() {
         val payload = SecurePayloadCodec.encryptTextToPayload("hello 文图易", "correct horse")
 
-        assertTrue(payload.startsWith(SecurePayloadCodec.PREFIX_V3))
-        assertEquals(SecurePayloadCodec.KEY_MODE_PASSPHRASE, SecurePayloadCodec.peekV3KeyMode(payload))
+        assertTrue(payload.startsWith(SecurePayloadCodec.PREFIX_V4))
+        assertEquals(SecurePayloadCodec.KEY_MODE_PASSPHRASE, SecurePayloadCodec.peekKeyMode(payload))
         assertEquals("hello 文图易", SecurePayloadCodec.decryptPayload(payload, "correct horse"))
         assertFails { SecurePayloadCodec.decryptPayload(payload, "wrong horse") }
     }
@@ -31,7 +31,7 @@ class SharedProtocolTest {
         )
 
         val payload = SecurePayloadCodec.encryptTextWithSessionKey("session 文图易", aliceSecret)
-        assertEquals(SecurePayloadCodec.KEY_MODE_SESSION_KEY, SecurePayloadCodec.peekV3KeyMode(payload))
+        assertEquals(SecurePayloadCodec.KEY_MODE_SESSION_KEY, SecurePayloadCodec.peekKeyMode(payload))
         assertEquals(
             "session 文图易",
             SecurePayloadCodec.decryptEnvelopeWithSessionKey(payload, bobSecret).text(),
@@ -49,6 +49,19 @@ class SharedProtocolTest {
         assertContentEquals(identity.publicKey, publicKey)
         assertContentEquals(identity.publicKey, restored.publicKey)
         assertContentEquals(identity.privateKey, restored.privateKey)
+    }
+
+    @Test
+    fun v4RejectsOutOfRangeArgonParams() {
+        val payload = SecurePayloadCodec.encryptTextToPayload("hi", "k")
+        assertTrue(payload.startsWith(SecurePayloadCodec.PREFIX_V4))
+        val packed = Encoding.b64Decode(payload.substring(SecurePayloadCodec.PREFIX_V4.length))
+        // memKb header field (offset 3..6) → 0xFFFFFFFF, far above the 256 MiB clamp.
+        // Must fail fast (clamp), never attempt a multi-GiB Argon2 allocation.
+        packed[3] = 0xFF.toByte(); packed[4] = 0xFF.toByte()
+        packed[5] = 0xFF.toByte(); packed[6] = 0xFF.toByte()
+        val tampered = SecurePayloadCodec.PREFIX_V4 + Encoding.b64(packed)
+        assertFails { SecurePayloadCodec.decryptPayload(tampered, "k") }
     }
 
     @Test

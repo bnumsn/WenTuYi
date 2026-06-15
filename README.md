@@ -16,7 +16,7 @@
 - 键盘动作：候选栏右侧提供普通文字图片、加密文字、加密二维码三个入口；动作会读取当前输入框文字或选中文本。加密文字在加密成功后替换选中文本/当前输入框内容；图片优先 `commitContent`，失败后走系统分享面板 fallback。长按加密入口可切换共享密钥或联系人会话密钥。
 - 输入法视觉接近 Gboard 的 Material 键盘样式。
 - Debug 构建提供"键盘本地测试"页，用于验证 `图` / `密图` 不经过社交应用也能插入图片。
-- 加密算法：**AES-256-GCM** + 12 字节随机 IV + 16 字节随机 salt + **Argon2id** 派生密钥 (m=32 MB, t=3, p=1)；版本/类型/salt/IV 作为 AAD 绑定到密文，防止格式篡改与类型混淆。仍兼容解密 v1/v2 的 PBKDF2-HmacSHA256 旧密文。
+- 加密算法：**AES-256-GCM** + 12 字节随机 IV + 16 字节随机 salt + **Argon2id** 派生密钥；当前默认输出 **WTY4** envelope（Argon2id m=64 MiB / t=4 / p=1，**参数写入 header** 以便后续平滑调参）。版本/类型/密钥模式/Argon 参数/salt/IV 全部作为 AAD 绑定到密文，防篡改与类型混淆。解密时对 header 里的 Argon 参数做范围 clamp（防止恶意密文用超大 m 触发 OOM）。仍兼容解密 v3（WTY3，m=32/t=3）及 v1/v2 的 PBKDF2-HmacSHA256 旧密文。
 - 加密图传输：**Reed-Solomon 纠错的标准 QR Code**（ZXing, ECC 级 H），替换了旧版易被 JPEG 压缩破坏的自研 `WTYBW2` 黑白栅格；长 payload 由文图易自有的 `WTYP1|id|N|T|chunk` 文本包装拆分到多张 QR，接收方按序号重组。
 - 身份与密钥：
   - 主 App 可生成 X25519 身份码（公钥 + 名字打包成单张 QR），通过"扫码 / 导入二维码"添加联系人；
@@ -169,7 +169,8 @@ adb shell ime set com.wentuyi.app/.TextImageImeService
 
 ## 版本兼容
 
-- v3 (`WTY3:`) 是当前默认输出格式。
+- v4 (`WTY4:`) 是当前默认输出格式（Argon2 参数写入 header，可平滑调参）。
+- v3 (`WTY3:`) 仍可被解密（旧版默认；Argon2 m=32/t=3 硬编码）。
 - v2 (`WTY2:`) 与 v1 (`WTY1:`) 文本载荷仍可被解密（PBKDF2 路径保留）。
 - v2 自研的 `WTYBW2 / Dense / Grid` 黑白加密图**不再支持读取**（自研栅格不可救药），如有历史图片请用 v0.2 解密导出明文后用 v3 重新加密。
 - v0.4 身份备份码 (64 字节) 与 v0.5 备份码 (68 字节 + CRC32) 都可被 v0.5 恢复。
