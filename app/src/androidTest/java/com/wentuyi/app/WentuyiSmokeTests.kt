@@ -356,6 +356,24 @@ class WentuyiSmokeTests {
         throw AssertionError("ratchet QR round-trip failed all attempts", lastErr)
     }
 
+    @Test fun identity_change_clears_ratchets_and_unverifies_contacts() {
+        val ctx = context
+        val peer = generateIdentity()
+        KeyExchange.saveContact(ctx, KeyExchange.Contact("reset-peer", peer.publicKey, verified = false))
+        val fp = KeyExchange.Contact("reset-peer", peer.publicKey).fingerprint
+        KeyExchange.setContactVerified(ctx, fp, true)
+        WentuyiSettings.saveRatchet(ctx, fp, "{\"dummy\":1}")
+        assertTrue("precondition: ratchet saved", WentuyiSettings.loadRatchet(ctx, fp) != null)
+        assertTrue("precondition: verified", KeyExchange.findContact(ctx, fp)?.verified == true)
+        try {
+            KeyExchange.replaceIdentity(ctx)  // identity change → clean break
+            assertTrue("ratchet cleared", WentuyiSettings.loadRatchet(ctx, fp) == null)
+            assertTrue("contact unverified", KeyExchange.findContact(ctx, fp)?.verified == false)
+        } finally {
+            KeyExchange.removeContact(ctx, fp)
+        }
+    }
+
     @Test fun sas_is_eight_digits() {
         val alice = generateIdentity()
         val bob = generateIdentity()
