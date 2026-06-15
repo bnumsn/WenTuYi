@@ -45,13 +45,14 @@ object RatchetSession {
         payload: String,
     ): ByteArray? {
         val state = loadOrBootstrapForReceive(context, identity, contact) ?: return null
-        val clone = DoubleRatchet.clone(state)
+        // decrypt() is transactional: on failure [state] is untouched, so no defensive clone
+        // is needed — a wrong-contact attempt just throws and we move on without persisting.
         return try {
-            val plain = DoubleRatchet.decrypt(clone, payload)
-            WentuyiSettings.saveRatchet(context, contact.fingerprint, DoubleRatchet.serialize(clone))
+            val plain = DoubleRatchet.decrypt(state, payload)
+            WentuyiSettings.saveRatchet(context, contact.fingerprint, DoubleRatchet.serialize(state))
             plain
         } catch (e: Exception) {
-            null  // wrong contact / not-for-us — clone discarded, real state untouched
+            null  // wrong contact / not-for-us — state was not advanced
         }
     }
 
