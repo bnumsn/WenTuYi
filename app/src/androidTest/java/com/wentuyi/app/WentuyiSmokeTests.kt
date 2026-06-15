@@ -304,6 +304,30 @@ class WentuyiSmokeTests {
         catch (e: Exception) { /* expected */ }
     }
 
+    @Test fun ratchet_serialize_mid_conversation_with_skips() {
+        // Persist/reload mid-conversation with out-of-order gaps → serialized skipped-key
+        // cache + chain state must survive every boundary.
+        val a = KeyExchange.getOrCreateIdentity(context)
+        val b = generateIdentity()
+        val aFirst = DoubleRatchet.isInitiator(a.publicKey, b.publicKey)
+        val aliceId = if (aFirst) a else b
+        val bobId = if (aFirst) b else a
+        val alice = DoubleRatchet.initAlice(
+            DoubleRatchet.initialRootKey(aliceId, bobId.publicKey), bobId.publicKey)
+        var bob = DoubleRatchet.initBob(
+            DoubleRatchet.initialRootKey(bobId, aliceId.publicKey), bobId)
+
+        val m = (0 until 4).map { DoubleRatchet.encrypt(alice, "m$it".toByteArray()) }
+        bob = DoubleRatchet.deserialize(DoubleRatchet.serialize(bob))
+        assertEquals("m3", String(DoubleRatchet.decrypt(bob, m[3])))   // skips 0..2 → cached
+        bob = DoubleRatchet.deserialize(DoubleRatchet.serialize(bob))  // persist mid-skip
+        assertEquals("m1", String(DoubleRatchet.decrypt(bob, m[1])))   // from skipped cache
+        assertEquals("m0", String(DoubleRatchet.decrypt(bob, m[0])))
+        val r = DoubleRatchet.encrypt(bob, "ok".toByteArray())
+        val alice2 = DoubleRatchet.deserialize(DoubleRatchet.serialize(alice))
+        assertEquals("ok", String(DoubleRatchet.decrypt(alice2, r)))
+    }
+
     @Test fun ratchet_qr_payload_round_trip() {
         // WTY5 ratchet payload → QR → read back → ratchet decrypt (end-to-end QR path).
         val a = KeyExchange.getOrCreateIdentity(context)

@@ -119,6 +119,10 @@ class CameraScanActivity : Activity() {
     }
 
     private fun openCamera() {
+        // Guard against a second open (surface-available + onResume/permission-result can
+        // both fire) leaking the prior ImageReader/device.
+        if (cameraDevice != null) return
+        runCatching { imageReader?.close() }; imageReader = null
         val manager = getSystemService(CAMERA_SERVICE) as CameraManager
         try {
             val cameraId = manager.cameraIdList.firstOrNull {
@@ -181,7 +185,10 @@ class CameraScanActivity : Activity() {
     }
 
     private val onFrame = ImageReader.OnImageAvailableListener { reader ->
-        val image = reader.acquireLatestImage() ?: return@OnImageAvailableListener
+        // acquireLatestImage throws IllegalStateException if the reader was closed by a
+        // racing onPause(); swallow it so the listener thread never crashes.
+        val image = try { reader.acquireLatestImage() } catch (e: Exception) { null }
+            ?: return@OnImageAvailableListener
         try {
             if (done) return@OnImageAvailableListener
             val plane = image.planes[0]

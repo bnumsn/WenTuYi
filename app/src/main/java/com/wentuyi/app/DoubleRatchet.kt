@@ -90,6 +90,7 @@ object DoubleRatchet {
         val header = packHeader(state.dhsPub, state.pn, state.ns)
         try {
             val ct = aeadEncrypt(mk, plaintext, header)
+            CryptoUtils.wipe(state.cks)  // old sending chain key superseded
             state.cks = newCks
             state.ns += 1
             val packed = ByteArray(header.size + ct.size)
@@ -99,7 +100,28 @@ object DoubleRatchet {
         } finally { CryptoUtils.wipe(mk) }
     }
 
+    /**
+     * Transactional: commits the advanced ratchet back into [state] only after the AEAD
+     * tag verifies, so a forged/corrupt message throws and leaves [state] untouched.
+     */
     fun decrypt(state: State, payload: String): ByteArray {
+        val work = clone(state)
+        val plain = decryptOn(work, payload)
+        commit(state, work)
+        return plain
+    }
+
+    private fun commit(dst: State, src: State) {
+        CryptoUtils.wipe(dst.rk); CryptoUtils.wipe(dst.dhsPriv)
+        CryptoUtils.wipe(dst.cks); CryptoUtils.wipe(dst.ckr)
+        dst.skipped.values.forEach { CryptoUtils.wipe(it) }
+        dst.skipped.clear(); dst.skipped.putAll(src.skipped)
+        dst.rk = src.rk; dst.dhsPub = src.dhsPub; dst.dhsPriv = src.dhsPriv
+        dst.dhr = src.dhr; dst.cks = src.cks; dst.ckr = src.ckr
+        dst.ns = src.ns; dst.nr = src.nr; dst.pn = src.pn
+    }
+
+    private fun decryptOn(state: State, payload: String): ByteArray {
         if (!payload.startsWith(PREFIX_V5)) throw GeneralSecurityException("不是 WTY5 棘轮密文")
         if (payload.length > MAX_PAYLOAD_CHARS) throw GeneralSecurityException("棘轮密文过大")
         val raw = Base64.decode(payload.substring(PREFIX_V5.length), Base64.NO_WRAP)
@@ -123,6 +145,7 @@ object DoubleRatchet {
         val (newCkr, mk) = kdfChain(ckr)
         try {
             val plain = aeadDecrypt(mk, ct, header)
+            CryptoUtils.wipe(state.ckr)  // old receiving chain key superseded
             state.ckr = newCkr
             state.nr += 1
             return plain
@@ -154,8 +177,11 @@ object DoubleRatchet {
         state.dhr = dhrPub
         run {
             val dh = KeyExchange.ecdh(state.dhsPriv, dhrPub)
-            try { val (rk, ckr) = kdfRoot(state.rk, dh); state.rk = rk; state.ckr = ckr }
-            finally { CryptoUtils.wipe(dh) }
+            try {
+                val (rk, ckr) = kdfRoot(state.rk, dh)
+                CryptoUtils.wipe(state.rk); CryptoUtils.wipe(state.ckr)
+                state.rk = rk; state.ckr = ckr
+            } finally { CryptoUtils.wipe(dh) }
         }
         val newDhs = KeyExchange.generateIdentity()
         CryptoUtils.wipe(state.dhsPriv)
@@ -163,8 +189,11 @@ object DoubleRatchet {
         state.dhsPriv = newDhs.privateKey
         run {
             val dh = KeyExchange.ecdh(state.dhsPriv, dhrPub)
-            try { val (rk, cks) = kdfRoot(state.rk, dh); state.rk = rk; state.cks = cks }
-            finally { CryptoUtils.wipe(dh) }
+            try {
+                val (rk, cks) = kdfRoot(state.rk, dh)
+                CryptoUtils.wipe(state.rk); CryptoUtils.wipe(state.cks)
+                state.rk = rk; state.cks = cks
+            } finally { CryptoUtils.wipe(dh) }
         }
     }
 

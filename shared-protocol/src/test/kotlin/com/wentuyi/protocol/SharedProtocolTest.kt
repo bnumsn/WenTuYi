@@ -136,17 +136,34 @@ class SharedProtocolTest {
     }
 
     @Test
-    fun ratchetTrialDecryptIsNonDestructive() {
+    fun ratchetDecryptIsTransactionalOnFailure() {
         val (alice, bob) = establishRatchet().let { it.alice to it.bob }
         val unrelated = establishRatchet().bob   // a different contact's state
         val m = DoubleRatchet.encrypt(alice, "for bob only".toByteArray())
 
-        // Trying the wrong contact on a clone throws and leaves the real state untouched.
-        val trial = DoubleRatchet.clone(unrelated)
-        assertFails { DoubleRatchet.decrypt(trial, m) }
-        assertEquals(0, unrelated.nr)
+        // decrypt() itself is transactional: a wrong-contact attempt throws and leaves the
+        // passed state byte-for-byte untouched — no defensive clone required by the caller.
+        val rkBefore = unrelated.rk.copyOf()
+        val nrBefore = unrelated.nr
+        val dhrWasNull = unrelated.dhr == null
+        assertFails { DoubleRatchet.decrypt(unrelated, m) }
+        assertContentEquals(rkBefore, unrelated.rk)
+        assertEquals(nrBefore, unrelated.nr)
+        assertEquals(dhrWasNull, unrelated.dhr == null)
         // The right contact still decrypts.
         assertEquals("for bob only", String(DoubleRatchet.decrypt(bob, m)))
+    }
+
+    @Test
+    fun ratchetManyDhRoundTrips() {
+        val (alice, bob) = establishRatchet().let { it.alice to it.bob }
+        // Alternate sender each turn so a fresh DH ratchet step runs every message.
+        repeat(12) { i ->
+            val a2b = DoubleRatchet.encrypt(alice, "a$i".toByteArray())
+            assertEquals("a$i", String(DoubleRatchet.decrypt(bob, a2b)))
+            val b2a = DoubleRatchet.encrypt(bob, "b$i".toByteArray())
+            assertEquals("b$i", String(DoubleRatchet.decrypt(alice, b2a)))
+        }
     }
 
     @Test

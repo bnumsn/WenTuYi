@@ -66,6 +66,8 @@ platforms/
 
 ## 加密格式 (WTY3)
 
+> 完整线上格式（WTY1–5 envelope、WTYID1/WTYB1/WTYP1、Double Ratchet 设计、SAS、安全边界）见 [docs/PROTOCOL.md](docs/PROTOCOL.md)——跨平台实现者对照文档。
+
 文本载荷形如 `WTY3:` + Base64(header || ciphertext)。Header 31 字节：
 
 | 偏移 | 大小 | 含义 |
