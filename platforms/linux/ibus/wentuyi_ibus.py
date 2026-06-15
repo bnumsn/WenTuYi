@@ -40,11 +40,22 @@ def find_cli() -> str:
     return "desktop-cli"
 
 
-def run_cli(args: Iterable[str]) -> str:
+def run_cli(args: Iterable[str], passphrase: str = None, stdin_text: str = None) -> str:
+    # Keep the shared passphrase and the plaintext off argv: pass the secret via the
+    # environment (only same-uid/root can read /proc/<pid>/environ, vs world-readable
+    # /proc/<pid>/cmdline) and the text via stdin (--stdin).
+    env = os.environ.copy()
+    cli_args = list(args)
+    if passphrase is not None:
+        env["WENTUYI_PASSPHRASE"] = passphrase
+    if stdin_text is not None and "--stdin" not in cli_args:
+        cli_args.append("--stdin")
     proc = subprocess.run(
-        [find_cli(), *args],
+        [find_cli(), *cli_args],
         check=False,
         text=True,
+        input=stdin_text,
+        env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
@@ -75,8 +86,8 @@ def read_passphrase() -> str:
 
 
 def self_test() -> int:
-    payload = run_cli(["encrypt-text", "--passphrase", "ibus-test", "ibus smoke"])
-    plain = run_cli(["decrypt-text", "--passphrase", "ibus-test", payload])
+    payload = run_cli(["encrypt-text"], passphrase="ibus-test", stdin_text="ibus smoke")
+    plain = run_cli(["decrypt-text"], passphrase="ibus-test", stdin_text=payload)
     if plain != "ibus smoke":
         raise RuntimeError(f"unexpected plaintext: {plain}")
     print(f"ibus-self-test={plain}")
@@ -150,9 +161,9 @@ def run_ibus() -> int:
             try:
                 passphrase = read_passphrase()
                 if mode == "encrypt":
-                    result = run_cli(["encrypt-text", "--passphrase", passphrase, self._preedit])
+                    result = run_cli(["encrypt-text"], passphrase=passphrase, stdin_text=self._preedit)
                 else:
-                    result = run_cli(["decrypt-text", "--passphrase", passphrase, self._preedit])
+                    result = run_cli(["decrypt-text"], passphrase=passphrase, stdin_text=self._preedit)
             except Exception as exc:  # IBus engines should report, not crash.
                 self._aux(f"Wentuyi: {exc}")
                 debug_log(f"transform-error mode={mode} error={exc}")

@@ -59,12 +59,25 @@ function Get-WentuyiPassphrase {
     throw "Set WENTUYI_PASSPHRASE or create $PassphraseFile"
 }
 
-function Invoke-WentuyiCli([string[]] $ArgsList) {
+# Secret via env, text via stdin (--stdin) — keeps the shared key and plaintext off the
+# child process command line (visible via WMI/Process Explorer to same-user/admin).
+function Invoke-WentuyiCli([string[]] $ArgsList, [string] $Passphrase = $null, [string] $StdinText = $null) {
     Set-PortableJavaRuntime
     Set-DesktopCliRuntime
-    $output = & $CliScript @ArgsList
-    if ($LASTEXITCODE -ne 0) { throw "desktop-cli failed: $($output -join "`n")" }
-    return @($output | Where-Object { $_ -and $_.Trim() })
+    $prev = $env:WENTUYI_PASSPHRASE
+    try {
+        if ($Passphrase) { $env:WENTUYI_PASSPHRASE = $Passphrase }
+        if ($null -ne $StdinText) {
+            $output = $StdinText | & $CliScript (@($ArgsList) + "--stdin")
+        } else {
+            $output = & $CliScript @ArgsList
+        }
+        if ($LASTEXITCODE -ne 0) { throw "desktop-cli failed: $($output -join "`n")" }
+        return @($output | Where-Object { $_ -and $_.Trim() })
+    } finally {
+        if ($null -eq $prev) { Remove-Item Env:\WENTUYI_PASSPHRASE -ErrorAction SilentlyContinue }
+        else { $env:WENTUYI_PASSPHRASE = $prev }
+    }
 }
 
 function Get-ThunderbirdExe {
@@ -145,18 +158,18 @@ if ($set -ne 1) { throw "Specify exactly one of -Text, -EncryptText, -PlainImage
 
 if ($Text) { Send-Body $Text; return }
 if ($EncryptText) {
-    $payload = (Invoke-WentuyiCli @("encrypt-text", "--passphrase", (Get-WentuyiPassphrase), $EncryptText))[0]
+    $payload = (Invoke-WentuyiCli @("encrypt-text") -Passphrase (Get-WentuyiPassphrase) -StdinText $EncryptText)[0]
     Send-Body $payload
     return
 }
 if ($PlainImage) {
     $out = Join-Path $OutDir "wentuyi-plain.png"
-    Invoke-WentuyiCli @("plain-image", "--out", $out, $PlainImage) | Out-Null
+    Invoke-WentuyiCli @("plain-image", "--out", $out) -StdinText $PlainImage | Out-Null
     Send-Files @($out)
     return
 }
 if ($EncryptedQr) {
-    $files = Invoke-WentuyiCli @("encrypted-qr", "--passphrase", (Get-WentuyiPassphrase), "--out-dir", $OutDir, "--prefix", "wentuyi-qr", $EncryptedQr)
+    $files = Invoke-WentuyiCli @("encrypted-qr", "--out-dir", $OutDir, "--prefix", "wentuyi-qr") -Passphrase (Get-WentuyiPassphrase) -StdinText $EncryptedQr
     Send-Files $files
     return
 }

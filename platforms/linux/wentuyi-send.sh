@@ -135,16 +135,17 @@ case "$MODE" in
         send_text "$VALUE"
         ;;
     encrypt-text)
-        payload=$("$CLI" encrypt-text --passphrase "$(passphrase)" "$VALUE")
+        # Secret via env, text via stdin → kept out of argv.
+        payload=$(printf '%s' "$VALUE" | WENTUYI_PASSPHRASE="$(passphrase)" "$CLI" encrypt-text --stdin)
         send_text "$payload"
         ;;
     plain-image)
         out="$OUT_DIR/wentuyi-plain.png"
-        "$CLI" plain-image --out "$out" "$VALUE" >/dev/null
+        printf '%s' "$VALUE" | "$CLI" plain-image --out "$out" --stdin >/dev/null
         send_files "$out"
         ;;
     encrypted-qr)
-        mapfile -t files < <("$CLI" encrypted-qr --passphrase "$(passphrase)" --out-dir "$OUT_DIR" --prefix wentuyi-qr "$VALUE")
+        mapfile -t files < <(printf '%s' "$VALUE" | WENTUYI_PASSPHRASE="$(passphrase)" "$CLI" encrypted-qr --out-dir "$OUT_DIR" --prefix wentuyi-qr --stdin)
         send_files "${files[@]}"
         ;;
 esac
