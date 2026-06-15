@@ -84,6 +84,71 @@ class SharedProtocolTest {
         assertContentEquals(img, chunk.data)
     }
 
+    // ─── Double Ratchet (WTY5 / PFS) ─────────────────────────────────────────
+
+    private class Pair2(val alice: DoubleRatchet.State, val bob: DoubleRatchet.State)
+
+    private fun establishRatchet(): Pair2 {
+        val a = KeyExchange.generateIdentity()
+        val b = KeyExchange.generateIdentity()
+        // Initial root key is deterministic from the two identity keys.
+        assertContentEquals(
+            DoubleRatchet.initialRootKey(a, b.publicKey),
+            DoubleRatchet.initialRootKey(b, a.publicKey),
+        )
+        val aFirst = DoubleRatchet.isInitiator(a.publicKey, b.publicKey)
+        val aliceId = if (aFirst) a else b
+        val bobId = if (aFirst) b else a
+        return Pair2(
+            DoubleRatchet.initAlice(DoubleRatchet.initialRootKey(aliceId, bobId.publicKey), bobId.publicKey),
+            DoubleRatchet.initBob(DoubleRatchet.initialRootKey(bobId, aliceId.publicKey), bobId),
+        )
+    }
+
+    @Test
+    fun ratchetBidirectionalAndOutOfOrder() {
+        val (alice, bob) = establishRatchet().let { it.alice to it.bob }
+
+        val m1 = DoubleRatchet.encrypt(alice, "你好 Bob".toByteArray(Charsets.UTF_8))
+        assertTrue(m1.startsWith(DoubleRatchet.PREFIX_V5))
+        assertEquals("你好 Bob", String(DoubleRatchet.decrypt(bob, m1), Charsets.UTF_8))
+
+        // Bob replies → triggers a DH ratchet step on both sides.
+        val r1 = DoubleRatchet.encrypt(bob, "收到 Alice".toByteArray(Charsets.UTF_8))
+        assertEquals("收到 Alice", String(DoubleRatchet.decrypt(alice, r1), Charsets.UTF_8))
+
+        // Alice sends three; Bob receives them out of order (#3, #1, #2).
+        val a1 = DoubleRatchet.encrypt(alice, "one".toByteArray())
+        val a2 = DoubleRatchet.encrypt(alice, "two".toByteArray())
+        val a3 = DoubleRatchet.encrypt(alice, "three".toByteArray())
+        assertEquals("three", String(DoubleRatchet.decrypt(bob, a3)))
+        assertEquals("one", String(DoubleRatchet.decrypt(bob, a1)))
+        assertEquals("two", String(DoubleRatchet.decrypt(bob, a2)))
+    }
+
+    @Test
+    fun ratchetMessageKeyConsumedOnce() {
+        val (alice, bob) = establishRatchet().let { it.alice to it.bob }
+        val m = DoubleRatchet.encrypt(alice, "secret".toByteArray())
+        assertEquals("secret", String(DoubleRatchet.decrypt(bob, m)))
+        // Replaying the same in-order message must fail — its chain key is already gone (PFS).
+        assertFails { DoubleRatchet.decrypt(bob, m) }
+    }
+
+    @Test
+    fun ratchetTrialDecryptIsNonDestructive() {
+        val (alice, bob) = establishRatchet().let { it.alice to it.bob }
+        val unrelated = establishRatchet().bob   // a different contact's state
+        val m = DoubleRatchet.encrypt(alice, "for bob only".toByteArray())
+
+        // Trying the wrong contact on a clone throws and leaves the real state untouched.
+        val trial = DoubleRatchet.clone(unrelated)
+        assertFails { DoubleRatchet.decrypt(trial, m) }
+        assertEquals(0, unrelated.nr)
+        // The right contact still decrypts.
+        assertEquals("for bob only", String(DoubleRatchet.decrypt(bob, m)))
+    }
+
     @Test
     fun payloadChunksAssembleOutOfOrderAndRejectTampering() {
         val payload = SecurePayloadCodec.PREFIX_V3 + "A".repeat(2_200)

@@ -50,6 +50,12 @@ object CryptoUtils {
 
     fun sha256(bytes: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(bytes)
 
+    fun hmacSha256(key: ByteArray, data: ByteArray): ByteArray {
+        val mac = javax.crypto.Mac.getInstance("HmacSHA256")
+        mac.init(javax.crypto.spec.SecretKeySpec(key, "HmacSHA256"))
+        return mac.doFinal(data)
+    }
+
     fun wipe(bytes: ByteArray?) {
         if (bytes != null) Arrays.fill(bytes, 0)
     }
