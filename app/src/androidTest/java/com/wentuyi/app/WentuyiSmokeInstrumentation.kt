@@ -54,15 +54,15 @@ class WentuyiSmokeInstrumentation : Instrumentation() {
         // 0. Negative tests for the things v0.4 audit flagged.
         runNegativeChecks(context, passphrase)
 
-        // 1. v3 payload round-trip + tamper.
+        // 1. v4 payload round-trip + tamper.
         val payload = SecurePayloadCodec.encryptTextToPayload(source, passphrase)
-        assertTrue(payload.startsWith(SecurePayloadCodec.PREFIX_V3), "v3 prefix")
+        assertTrue(payload.startsWith(SecurePayloadCodec.PREFIX_V4), "v4 prefix")
         val decryptedText = SecurePayloadCodec.decryptPayload(payload, passphrase)
-        assertEquals(source, decryptedText, "v3 text round-trip")
-        assertDecryptFails(payload, "wrong-key", "v3 wrong key")
+        assertEquals(source, decryptedText, "v4 text round-trip")
+        assertDecryptFails(payload, "wrong-key", "v4 wrong key")
         // Header-bit flip: change the type byte → AAD verifies, should reject.
         val mangled = mangleHeader(payload)
-        assertDecryptFails(mangled, passphrase, "v3 AAD tamper rejected")
+        assertDecryptFails(mangled, passphrase, "v4 AAD tamper rejected")
 
         // 2. Pinyin smoke (Kotlin sees the unchanged Java helper).
         assertEquals("你好", PinyinCandidates.firstCandidateOrRaw("nihao"), "pinyin nihao")
@@ -273,14 +273,14 @@ class WentuyiSmokeInstrumentation : Instrumentation() {
     }
 
     private fun mangleHeader(payload: String): String {
-        // Header byte 1 = type. Flip it and re-pack. AAD must reject this.
-        require(payload.startsWith(SecurePayloadCodec.PREFIX_V3))
+        // Header byte 1 = type (same offset in v3/v4). Flip it and re-pack. AAD must reject.
+        require(payload.startsWith(SecurePayloadCodec.PREFIX_V4))
         val body = android.util.Base64.decode(
-            payload.substring(SecurePayloadCodec.PREFIX_V3.length),
+            payload.substring(SecurePayloadCodec.PREFIX_V4.length),
             android.util.Base64.NO_WRAP
         )
         body[1] = (body[1].toInt() xor 0xFF).toByte()
-        return SecurePayloadCodec.PREFIX_V3 +
+        return SecurePayloadCodec.PREFIX_V4 +
             android.util.Base64.encodeToString(body, android.util.Base64.NO_WRAP)
     }
 

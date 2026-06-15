@@ -16,7 +16,7 @@
 - 键盘动作：候选栏右侧提供普通文字图片、加密文字、加密二维码三个入口；动作会读取当前输入框文字或选中文本。加密文字在加密成功后替换选中文本/当前输入框内容；图片优先 `commitContent`，失败后走系统分享面板 fallback。长按加密入口可切换共享密钥或联系人会话密钥。
 - 输入法视觉接近 Gboard 的 Material 键盘样式。
 - Debug 构建提供"键盘本地测试"页，用于验证 `图` / `密图` 不经过社交应用也能插入图片。
-- 加密算法：**AES-256-GCM** + 12 字节随机 IV + 16 字节随机 salt + **Argon2id** 派生密钥 (m=32 MB, t=3, p=1)；版本/类型/salt/IV 作为 AAD 绑定到密文，防止格式篡改与类型混淆。仍兼容解密 v1/v2 的 PBKDF2-HmacSHA256 旧密文。
+- 加密算法：**AES-256-GCM** + 12 字节随机 IV + 16 字节随机 salt + **Argon2id** 派生密钥；当前默认输出 **WTY4** envelope（Argon2id m=64 MiB / t=4 / p=1，**参数写入 header** 以便后续平滑调参）。版本/类型/密钥模式/Argon 参数/salt/IV 全部作为 AAD 绑定到密文，防篡改与类型混淆。解密时对 header 里的 Argon 参数做范围 clamp（防止恶意密文用超大 m 触发 OOM）。仍兼容解密 v3（WTY3，m=32/t=3）及 v1/v2 的 PBKDF2-HmacSHA256 旧密文。
 - 加密图传输：**Reed-Solomon 纠错的标准 QR Code**（ZXing, ECC 级 H），替换了旧版易被 JPEG 压缩破坏的自研 `WTYBW2` 黑白栅格；长 payload 由文图易自有的 `WTYP1|id|N|T|chunk` 文本包装拆分到多张 QR，接收方按序号重组。
 - 身份与密钥：
   - 主 App 可生成 X25519 身份码（公钥 + 名字打包成单张 QR），通过"扫码 / 导入二维码"添加联系人；
@@ -150,26 +150,27 @@ adb shell ime set com.wentuyi.app/.TextImageImeService
 ## 安全模型与已知限制
 
 **安全性保证**：
-- 静态保护：AES-256-GCM AEAD + Argon2id (m=32 MiB, t=3, p=1)，header 作 GCM AAD 绑定 version/type/key-mode/salt/IV。
+- 静态保护：AES-256-GCM AEAD + Argon2id（WTY4 默认 m=64 MiB / t=4 / p=1，参数写入 header 并 clamp），header 作 GCM AAD 绑定 version/type/key-mode/argon 参数/salt/IV。
 - 身份认证：X25519 公钥指纹（SHA-256[..8] Base32）+ 8 位 HKDF SAS 供双方口外核对。
 - 端到端：会话密钥由双方公钥 ECDH 后 HKDF-SHA256 派生；不经任何服务器。
+- **前向保密 (PFS)**：v0.6 起，发给**已验证联系人的加密文本**默认走 **WTY5 Double Ratchet**（Signal 式双棘轮）——私钥泄漏后已发出的历史消息无法被回溯解密，且具破后向恢复。
 
-**⚠ 重要：无前向保密 (Forward Secrecy / PFS)**
-- 当前 X25519 是长期身份密钥；同一对身份生成的会话密钥**对所有消息都相同**。
-- 含义：如果任何一方的私钥被攻破，**所有过往加密消息都可被回溯解密**。
-- 想要 PFS 必须实施 Double Ratchet（Signal 协议），列在 v0.6+ 路线图。
-- 在此之前：身份私钥的保护就是会话历史的保护。**务必抄写身份备份码并离线保管**。
+**⚠ PFS 的适用范围与限制**
+- **有 PFS**：已验证联系人的**加密文本**（WTY5 棘轮）。
+- **暂无 PFS**：① 旧「共享密钥」路径；② 联系人**加密二维码**路径（当前仍走 WTY4 会话密钥，棘轮化在下一小步）；③ 棘轮**首条消息**——接收方首次回复前，链含长期身份密钥成分，回复后完整生效（同 Signal 无 prekey 时）。
+- 棘轮会话状态以 Keystore 包裹存于本机；身份私钥仍是信任根，**务必抄写身份备份码并离线保管**。
 
 **其他已知限制**：
 - QR Code 解码已能容忍 JPEG q=80 的重压缩（smoke test 覆盖），但极低质量 (q≤40)、严重裁剪、二次摄屏仍可能失败 — 真机逐项验证微信/QQ/钉钉/飞书/Telegram/WhatsApp 的实际表现，并补充兼容性矩阵。
 - 加密大图仍需要切多张 QR（每张 ≤ ~800 字节 payload）；v0.5 起 chunk-id 由 SHA-256(payload) 派生，重组时校验，可阻止 chunk 拼接攻击。
-- ScanActivity 当前只从相册/系统图片选择器读取 — 实时摄像头预览需要 `android.hardware.camera2` 自实现（避免引入 CameraX/AndroidX）；待 v0.6 评估。
+- v0.6 起新增 `CameraScanActivity` 实时摄像头扫码（`android.hardware.camera2` + ZXing 自实现，不引入 CameraX/AndroidX）：预览后台线程从 Y 平面解码首个 QR，文本交回 `ScanActivity.routeScannedTexts` 统一路由。⚠ 该路径依赖真实摄像头，未纳入 CI/instrumentation 自动化，需真机对二维码逐项实测。仍保留相册/图片选择器导入。
 - Debug 构建保留默认 passphrase 仅用于开发体验；Release 构建必须先保存身份码或共享密钥。
 - X25519 私钥目前仅靠 Keystore-wrapped SharedPreferences 保护；可考虑直接用 `KeyProperties.KEY_ALGORITHM_EC` 的硬件支持密钥（API 31+）。
 
 ## 版本兼容
 
-- v3 (`WTY3:`) 是当前默认输出格式。
+- v4 (`WTY4:`) 是当前默认输出格式（Argon2 参数写入 header，可平滑调参）。
+- v3 (`WTY3:`) 仍可被解密（旧版默认；Argon2 m=32/t=3 硬编码）。
 - v2 (`WTY2:`) 与 v1 (`WTY1:`) 文本载荷仍可被解密（PBKDF2 路径保留）。
 - v2 自研的 `WTYBW2 / Dense / Grid` 黑白加密图**不再支持读取**（自研栅格不可救药），如有历史图片请用 v0.2 解密导出明文后用 v3 重新加密。
 - v0.4 身份备份码 (64 字节) 与 v0.5 备份码 (68 字节 + CRC32) 都可被 v0.5 恢复。

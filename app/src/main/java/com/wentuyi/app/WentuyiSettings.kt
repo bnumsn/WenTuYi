@@ -136,6 +136,35 @@ object WentuyiSettings {
         prefs(context).edit().putString(KEY_CONTACTS_JSON, json).apply()
     }
 
+    // ─── Per-contact Double Ratchet state (Keystore-wrapped, keyed by fingerprint) ──
+
+    private fun ratchetKey(fingerprint: String) = "ratchet_$fingerprint"
+
+    /** Returns the serialized ratchet state for [fingerprint], or null if none/corrupt. */
+    fun loadRatchet(context: Context, fingerprint: String): String? {
+        val encrypted = prefs(context).getString(ratchetKey(fingerprint), null) ?: return null
+        return try {
+            decryptKeystoreString(encrypted)
+        } catch (e: Exception) {
+            // Corrupt ratchet state is unrecoverable — drop it so a fresh session re-bootstraps.
+            prefs(context).edit().remove(ratchetKey(fingerprint)).apply()
+            null
+        }
+    }
+
+    fun saveRatchet(context: Context, fingerprint: String, json: String) {
+        try {
+            // synchronous = true: state must hit disk before the produced ciphertext is sent.
+            putKeystoreString(prefs(context), ratchetKey(fingerprint), json, synchronous = true)
+        } catch (e: GeneralSecurityException) {
+            throw IllegalStateException("棘轮状态保存失败", e)
+        }
+    }
+
+    fun clearRatchet(context: Context, fingerprint: String) {
+        prefs(context).edit().remove(ratchetKey(fingerprint)).apply()
+    }
+
     /**
      * Subscribes [onChanged] to contact-list mutations (rename / delete / add). Used
      * by the IME so its [cachedContacts] doesn't go stale while the user is editing
@@ -168,7 +197,12 @@ object WentuyiSettings {
         context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
     @Throws(GeneralSecurityException::class)
-    private fun putKeystoreString(prefs: SharedPreferences, key: String, value: String) {
+    private fun putKeystoreString(
+        prefs: SharedPreferences,
+        key: String,
+        value: String,
+        synchronous: Boolean = false,
+    ) {
         val cipher = Cipher.getInstance(CIPHER_TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, getOrCreateSecretKey())
         val cipherText = cipher.doFinal(value.toByteArray(StandardCharsets.UTF_8))
@@ -177,9 +211,12 @@ object WentuyiSettings {
         packed[0] = iv.size.toByte()
         System.arraycopy(iv, 0, packed, 1, iv.size)
         System.arraycopy(cipherText, 0, packed, 1 + iv.size, cipherText.size)
-        prefs.edit()
+        val editor = prefs.edit()
             .putString(key, ENCRYPTED_PREFIX + Base64.encodeToString(packed, Base64.NO_WRAP))
-            .apply()
+        // Ratchet state MUST be durable before the ciphertext it produced is sent — an
+        // async apply() that loses the write across a crash would re-derive the same
+        // message key/nonce on restart (AES-GCM nonce reuse). commit() writes synchronously.
+        if (synchronous) editor.commit() else editor.apply()
     }
 
     @Throws(GeneralSecurityException::class)

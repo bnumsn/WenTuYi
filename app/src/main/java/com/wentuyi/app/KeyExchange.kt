@@ -104,7 +104,8 @@ object KeyExchange {
         WentuyiSettings.clearIdentity(context)
     }
 
-    private fun generateIdentity(): Identity {
+    /** Generates a fresh X25519 keypair — used for identities and for ratchet keys. */
+    internal fun generateIdentity(): Identity {
         val gen = X25519KeyPairGenerator()
         gen.init(X25519KeyGenerationParameters(random))
         val pair = gen.generateKeyPair()
@@ -338,6 +339,8 @@ object KeyExchange {
 
     fun removeContact(context: Context, fingerprint: String) {
         val remaining = listContacts(context).filterNot { it.fingerprint == fingerprint }
+        // Drop any ratchet session too — re-adding the contact should re-bootstrap fresh.
+        WentuyiSettings.clearRatchet(context, fingerprint)
         val arr = JSONArray()
         for (c in remaining) arr.put(c.toJson())
         WentuyiSettings.setContactsJson(context, arr.toString())

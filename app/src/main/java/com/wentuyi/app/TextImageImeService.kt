@@ -60,6 +60,9 @@ class TextImageImeService : InputMethodService() {
     /** 0 = shared passphrase; 1..N = the N-th contact (WTY3 session key). */
     private var sendTargetIndex = 0
     private var imeSessionId = 0L
+
+    /** 🖼 mode: false = plain pretty image, true = anti-OCR (noisy/jittered plaintext). */
+    private var antiOcrMode = false
     private var cachedContacts: List<KeyExchange.Contact>? = null
     private var contactsPrefsListener:
         android.content.SharedPreferences.OnSharedPreferenceChangeListener? = null
@@ -114,7 +117,8 @@ class TextImageImeService : InputMethodService() {
         // immediately performs the action. 图片 = plain text→image (not encrypted),
         // 密文 = encrypted text replacing the box, 二维码 = encrypted QR image.
         // Long-press 密文 / 二维码 cycles the encryption target.
-        bar.addView(sendIcon("🖼", accent = false) { sendPlainImage() }, sendIconParams())
+        bar.addView(sendIcon("🖼", accent = false, onLong = { toggleAntiOcrWithToast() }) { sendPlainImage() },
+            sendIconParams())
         bar.addView(sendIcon("🔒", accent = true, onLong = { cycleTargetWithToast() }) { sendCipherText() },
             sendIconParams())
         bar.addView(sendIcon("▦", accent = true, onLong = { cycleTargetWithToast() }) { sendCipherQr() },
@@ -428,11 +432,18 @@ class TextImageImeService : InputMethodService() {
             leftMargin = KeyboardUi.dp(this@TextImageImeService, 4)
         }
 
-    /** 🖼 — render the input-box text to a plain (unencrypted) PNG and send it. */
+    /** 🖼 — render the input-box text to a plain (unencrypted) PNG and send it.
+     *  Long-press toggles anti-OCR mode (readable to humans, noisy to machine OCR). */
     private fun sendPlainImage() {
         val text = readInputBoxText()
         if (text.isBlank()) { toast("输入框没有文字，先打字再点"); return }
-        sendController.generatePlainTextImage(text)
+        if (antiOcrMode) sendController.generateAntiOcrImage(text)
+        else sendController.generatePlainTextImage(text)
+    }
+
+    private fun toggleAntiOcrWithToast() {
+        antiOcrMode = !antiOcrMode
+        toast(if (antiOcrMode) "图片模式：防 OCR（明文但防机器识别）" else "图片模式：普通文字图")
     }
 
     /** 🔒 — encrypt the input-box text and replace it with the WTY3 ciphertext. */
