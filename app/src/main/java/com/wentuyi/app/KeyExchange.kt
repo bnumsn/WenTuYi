@@ -74,6 +74,10 @@ object KeyExchange {
             ?.let { (pub, priv) -> return Identity(pub, priv) }
         val identity = generateIdentity()
         WentuyiSettings.saveIdentity(context, identity.publicKey, identity.privateKey)
+        // Reached only when there was no readable identity — either first run (nothing to
+        // clear) or a corrupted-identity regen, which is a new identity → same clean-break
+        // invariant as replaceIdentity: drop stale sessions / verification.
+        onIdentityChanged(context)
         return identity
     }
 
