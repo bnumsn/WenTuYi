@@ -119,8 +119,8 @@ class SendController(
         onStatus(progressLabel("正在加密文字...", target))
         scope.launch {
             try {
-                val payload = withContext(Dispatchers.Default) { encryptText(text, target) }
-                deliverEncryptedText(payload, anchor, target, text)
+                val enc = withContext(Dispatchers.Default) { encryptText(text, target) }
+                deliverEncryptedText(enc.payload, anchor, target, text, enc.noForwardSecrecy)
             } catch (e: Exception) {
                 onStatus("加密失败：${e.userMessage()}")
             }
@@ -155,22 +155,31 @@ class SendController(
 
     // ─── Crypto routing ──────────────────────────────────────────────────────
 
-    private fun encryptText(text: String, target: SendTarget): String = when (target) {
+    /** Encrypted text + whether it had to fall back off the forward-secret ratchet path. */
+    private class EncryptedText(val payload: String, val noForwardSecrecy: Boolean)
+
+    private fun encryptText(text: String, target: SendTarget): EncryptedText = when (target) {
         is SendTarget.SharedPassphrase ->
-            SecurePayloadCodec.encryptTextToPayload(text, WentuyiSettings.getPassphrase(service))
+            EncryptedText(
+                SecurePayloadCodec.encryptTextToPayload(text, WentuyiSettings.getPassphrase(service)),
+                noForwardSecrecy = false,  // shared-key mode is a deliberate choice, not a downgrade
+            )
         is SendTarget.Contact -> {
             // Prefer the Double Ratchet (WTY5, forward-secret). Falls back to the WTY4
             // session key only when the ratchet has no sending chain yet (responder before
-            // it has received the initiator's first message).
-            RatchetSession.encryptText(service, target.identity, target.contact, text)
-                ?: run {
-                    val secret = KeyExchange.deriveSharedSecret(target.identity, target.contact.publicKey)
-                    try {
-                        SecurePayloadCodec.encryptTextWithSessionKey(text, secret)
-                    } finally {
-                        CryptoUtils.wipe(secret)
-                    }
+            // it has received the initiator's first message) — surfaced to the user below.
+            val ratchet = RatchetSession.encryptText(service, target.identity, target.contact, text)
+            if (ratchet != null) {
+                EncryptedText(ratchet, noForwardSecrecy = false)
+            } else {
+                val secret = KeyExchange.deriveSharedSecret(target.identity, target.contact.publicKey)
+                try {
+                    EncryptedText(SecurePayloadCodec.encryptTextWithSessionKey(text, secret),
+                        noForwardSecrecy = true)
+                } finally {
+                    CryptoUtils.wipe(secret)
                 }
+            }
         }
         // Defensive: callers reject Unavailable before encrypting; never downgrade here.
         is SendTarget.Unavailable -> throw IllegalStateException(target.reason)
@@ -197,12 +206,16 @@ class SendController(
         anchor: TargetAnchor,
         target: SendTarget,
         sourceText: String,
+        noForwardSecrecy: Boolean,
     ) {
         val targetLabel = targetLabel(target)
         if (!anchorStillCurrent(anchor)) { onStatus("目标已切换，未写入"); return }
         val connection = service.currentInputConnection ?: run { onStatus("当前输入框不可写"); return }
+        // Tell the user when a contact send couldn't use the forward-secret ratchet yet
+        // (responder before first receive) and silently fell back to the WTY4 session key.
+        val pfsNote = if (noForwardSecrecy) "（本条暂无前向保密，待对方回复后自动启用）" else ""
         when (replaceVisibleTextIfMatches(connection, sourceText, payload)) {
-            TextReplaceResult.COMMITTED -> onStatus("已写入加密文字 ($targetLabel)")
+            TextReplaceResult.COMMITTED -> onStatus("已写入加密文字 ($targetLabel)$pfsNote")
             TextReplaceResult.SOURCE_CHANGED -> onStatus("输入内容已变化，未写入")
             TextReplaceResult.FAILED -> onStatus("写入失败")
         }

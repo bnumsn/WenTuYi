@@ -150,6 +150,21 @@ class SharedProtocolTest {
     }
 
     @Test
+    fun ratchetSkippedCacheIsGloballyBounded() {
+        val (alice, bob) = establishRatchet().let { it.alice to it.bob }
+        // One long sending chain (no Bob reply → no DH step), received at <1000 gaps so the
+        // per-step MAX_SKIP isn't hit but the global cache accumulates past its 2000 cap.
+        val msgs = (0 until 2400).map { DoubleRatchet.encrypt(alice, "m$it".toByteArray()) }
+        DoubleRatchet.decrypt(bob, msgs[900])
+        DoubleRatchet.decrypt(bob, msgs[1800])
+        DoubleRatchet.decrypt(bob, msgs[2399])
+        assertTrue(bob.skipped.size <= 2000)
+        // A recent skipped message still decrypts; the very oldest was evicted.
+        assertEquals("m2300", String(DoubleRatchet.decrypt(bob, msgs[2300])))
+        assertFails { DoubleRatchet.decrypt(bob, msgs[5]) }
+    }
+
+    @Test
     fun payloadChunksAssembleOutOfOrderAndRejectTampering() {
         val payload = SecurePayloadCodec.PREFIX_V3 + "A".repeat(2_200)
         val chunks = PayloadChunks.chunkPayload(payload)

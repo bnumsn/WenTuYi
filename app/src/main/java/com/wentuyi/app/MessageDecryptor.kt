@@ -35,7 +35,14 @@ object MessageDecryptor {
         OTHER,
     }
 
+    /** Upper bound on accepted ciphertext length — guards against huge-paste DoS, which
+     *  the WTY5 path would otherwise re-allocate once per contact during trial decrypt. */
+    private const val MAX_PAYLOAD_CHARS = 512 * 1024
+
     fun decrypt(context: Context, payload: String): Result {
+        if (payload.length > MAX_PAYLOAD_CHARS) {
+            return Result.Failure(Reason.UNKNOWN_FORMAT, "加密内容过大")
+        }
         if (payload.startsWith(DoubleRatchet.PREFIX_V5)) {
             return decryptWithRatchet(context, payload)
         }

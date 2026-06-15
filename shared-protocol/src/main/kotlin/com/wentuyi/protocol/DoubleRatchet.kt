@@ -38,7 +38,9 @@ object DoubleRatchet {
     private const val KEY_BYTES = 32
     private const val IV_BYTES = 12
     private const val GCM_TAG_BITS = 128
-    private const val MAX_SKIP = 1000            // bound on skipped message keys per chain step
+    private const val MAX_SKIP = 1000            // bound on skipped keys per single chain step
+    private const val MAX_SKIP_TOTAL = 2000      // global cap on the persisted skipped-key cache
+    private const val MAX_PAYLOAD_CHARS = 512 * 1024  // reject absurd inputs before decoding
     private const val HEADER_LEN = 32 + 4 + 4    // ratchetPub(32) + PN(4) + N(4)
 
     private val INFO_INIT = "WTY5-root-init".toByteArray(StandardCharsets.US_ASCII)
@@ -119,6 +121,7 @@ object DoubleRatchet {
     /** Mutates [state]; throws on any failure. Use [clone] for non-destructive trials. */
     fun decrypt(state: State, payload: String): ByteArray {
         if (!payload.startsWith(PREFIX_V5)) throw GeneralSecurityException("不是 WTY5 棘轮密文")
+        if (payload.length > MAX_PAYLOAD_CHARS) throw GeneralSecurityException("棘轮密文过大")
         val raw = Encoding.b64Decode(payload.substring(PREFIX_V5.length))
         if (raw.size <= HEADER_LEN) throw GeneralSecurityException("棘轮密文不完整")
         val header = Arrays.copyOfRange(raw, 0, HEADER_LEN)
@@ -161,6 +164,12 @@ object DoubleRatchet {
             state.nr += 1
         }
         state.ckr = chain
+        // Global cap so a peer streaming high-N messages can't grow the persisted cache
+        // unbounded. LinkedHashMap iteration is insertion order → evict the oldest first.
+        while (state.skipped.size > MAX_SKIP_TOTAL) {
+            val oldest = state.skipped.keys.iterator().next()
+            state.skipped.remove(oldest)
+        }
     }
 
     private fun dhRatchet(state: State, dhrPub: ByteArray) {

@@ -27,6 +27,8 @@ object DoubleRatchet {
     private const val IV_BYTES = 12
     private const val GCM_TAG_BITS = 128
     private const val MAX_SKIP = 1000
+    private const val MAX_SKIP_TOTAL = 2000
+    private const val MAX_PAYLOAD_CHARS = 512 * 1024
     private const val HEADER_LEN = 32 + 4 + 4
 
     private val INFO_INIT = "WTY5-root-init".toByteArray(StandardCharsets.US_ASCII)
@@ -99,6 +101,7 @@ object DoubleRatchet {
 
     fun decrypt(state: State, payload: String): ByteArray {
         if (!payload.startsWith(PREFIX_V5)) throw GeneralSecurityException("不是 WTY5 棘轮密文")
+        if (payload.length > MAX_PAYLOAD_CHARS) throw GeneralSecurityException("棘轮密文过大")
         val raw = Base64.decode(payload.substring(PREFIX_V5.length), Base64.NO_WRAP)
         if (raw.size <= HEADER_LEN) throw GeneralSecurityException("棘轮密文不完整")
         val header = Arrays.copyOfRange(raw, 0, HEADER_LEN)
@@ -137,6 +140,11 @@ object DoubleRatchet {
             state.nr += 1
         }
         state.ckr = chain
+        // Global cap on the persisted skipped-key cache; evict oldest (insertion order).
+        while (state.skipped.size > MAX_SKIP_TOTAL) {
+            val oldest = state.skipped.keys.iterator().next()
+            state.skipped.remove(oldest)
+        }
     }
 
     private fun dhRatchet(state: State, dhrPub: ByteArray) {
