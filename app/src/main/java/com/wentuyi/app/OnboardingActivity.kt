@@ -107,7 +107,7 @@ class OnboardingActivity : Activity() {
 
         step3Check = stepRow(root,
             "③  生成你的身份码（X25519 公钥）",
-            "用于安全加好友。生成后到「我的身份码 / 共享密钥」让对方扫码，双方核对 8 位校验码就能开始端到端加密通信。\n\n⚠ 当前版本无前向保密 (PFS) — 私钥泄漏会让历史消息可被解密。",
+            "用于安全加好友。生成后到「我的身份码 / 共享密钥」让对方扫码，双方核对 8 位校验码就能开始端到端加密通信。\n\n✓ 发给已验证联系人的加密文本已启用前向保密 (Double Ratchet)；共享密钥与加密二维码暂无 PFS。",
             "现在生成"
         ) { ensureIdentityGenerated() }
         step3ActionLabel = { stepActionLabel ->
@@ -267,7 +267,7 @@ class OnboardingActivity : Activity() {
                     "• 丢失 → 永久失联，所有联系人需重新扫码加你；\n" +
                     "• 泄漏 → 攻击者可冒充你发送消息、解密历史。\n\n" +
                     "请立即到「我的身份码 / 共享密钥 → 备份身份」抄写备份码，离线保管。\n\n" +
-                    "当前版本无前向保密 (PFS)：私钥泄漏会让过往消息也可被解密。"
+                    "已验证联系人的加密文本有前向保密 (Double Ratchet)；共享密钥、加密二维码及棘轮首条消息暂无 PFS，私钥泄漏仍可能解密这部分历史。"
             )
             .setPositiveButton("现在去备份") { _, _ ->
                 startActivity(Intent(this, KeyManagementActivity::class.java))

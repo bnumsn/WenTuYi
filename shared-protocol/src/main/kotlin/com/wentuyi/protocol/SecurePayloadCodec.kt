@@ -104,7 +104,8 @@ object SecurePayloadCodec {
 
     fun isPayload(payload: String?): Boolean = payload != null &&
         (payload.startsWith(PREFIX_V1) || payload.startsWith(PREFIX_V2) ||
-            payload.startsWith(PREFIX_V3) || payload.startsWith(PREFIX_V4))
+            payload.startsWith(PREFIX_V3) || payload.startsWith(PREFIX_V4) ||
+            payload.startsWith(DoubleRatchet.PREFIX_V5))
 
     fun peekKeyMode(payload: String?): Byte? {
         val prefix = when {

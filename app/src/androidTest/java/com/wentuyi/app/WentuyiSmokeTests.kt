@@ -304,6 +304,34 @@ class WentuyiSmokeTests {
         catch (e: Exception) { /* expected */ }
     }
 
+    @Test fun ratchet_qr_payload_round_trip() {
+        // WTY5 ratchet payload → QR → read back → ratchet decrypt (end-to-end QR path).
+        val a = KeyExchange.getOrCreateIdentity(context)
+        val b = generateIdentity()
+        val aliceIsA = DoubleRatchet.isInitiator(a.publicKey, b.publicKey)
+        val aliceId = if (aliceIsA) a else b
+        val bobId = if (aliceIsA) b else a
+        val alice = DoubleRatchet.initAlice(
+            DoubleRatchet.initialRootKey(aliceId, bobId.publicKey), bobId.publicKey)
+        val bob = DoubleRatchet.initBob(
+            DoubleRatchet.initialRootKey(bobId, aliceId.publicKey), bobId)
+        val payload = DoubleRatchet.encrypt(alice, "二维码棘轮消息".toByteArray(Charsets.UTF_8))
+        assertTrue(payload.startsWith(DoubleRatchet.PREFIX_V5))
+
+        var lastErr: Throwable? = null
+        repeat(3) {
+            try {
+                val bitmaps = TextImageCodec.renderEncryptedPayloadAsQr(payload)
+                val readback = TextImageCodec.assembleEncryptedPayload(bitmaps)
+                assertEquals(payload, readback)  // QR survived render→decode
+                assertEquals("二维码棘轮消息",
+                    String(DoubleRatchet.decrypt(bob, readback), Charsets.UTF_8))
+                return
+            } catch (e: Throwable) { lastErr = e }
+        }
+        throw AssertionError("ratchet QR round-trip failed all attempts", lastErr)
+    }
+
     @Test fun sas_is_eight_digits() {
         val alice = generateIdentity()
         val bob = generateIdentity()

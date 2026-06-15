@@ -336,7 +336,7 @@ class KeyManagementActivity : Activity() {
                 container.addView(toggleBtn, matchWrap())
                 val dialog = AlertDialog.Builder(this@KeyManagementActivity)
                     .setTitle("身份备份码")
-                    .setMessage("把这段抄写或截图保存到密码管理器。任何人拿到都能冒充你 — 不要发到网上、不要存云盘。\n\n注意：当前版本无前向保密 (PFS)，私钥泄漏会导致历史消息可被解密。")
+                    .setMessage("把这段抄写或截图保存到密码管理器。任何人拿到都能冒充你 — 不要发到网上、不要存云盘。\n\n说明：发给已验证联系人的加密文本已启用前向保密 (Double Ratchet)；但共享密钥、加密二维码及棘轮首条消息暂无 PFS，私钥泄漏可能导致这部分历史消息被解密。")
                     .setView(container)
                     .setPositiveButton("复制到剪贴板") { _, _ ->
                         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager

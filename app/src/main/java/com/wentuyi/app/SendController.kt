@@ -135,11 +135,10 @@ class SendController(
         onStatus(progressLabel("正在生成加密二维码...", target))
         scope.launch {
             try {
-                val bitmaps = withContext(Dispatchers.Default) {
-                    encryptToQrBitmaps(text, target)
-                }
-                val uris = withContext(Dispatchers.IO) { bitmaps.map { ImageStore.savePng(service, it) } }
-                val suffix = " (${targetLabel(target)})"
+                val qr = withContext(Dispatchers.Default) { encryptToQrBitmaps(text, target) }
+                val uris = withContext(Dispatchers.IO) { qr.bitmaps.map { ImageStore.savePng(service, it) } }
+                val pfsNote = if (qr.noForwardSecrecy) "（暂无前向保密）" else ""
+                val suffix = " (${targetLabel(target)})$pfsNote"
                 deliverImages(
                     uris,
                     anchor,
@@ -185,15 +184,29 @@ class SendController(
         is SendTarget.Unavailable -> throw IllegalStateException(target.reason)
     }
 
-    private fun encryptToQrBitmaps(text: String, target: SendTarget) = when (target) {
+    /** QR bitmaps + whether it fell back off the forward-secret ratchet path. */
+    private class EncryptedQr(val bitmaps: List<android.graphics.Bitmap>, val noForwardSecrecy: Boolean)
+
+    private fun encryptToQrBitmaps(text: String, target: SendTarget): EncryptedQr = when (target) {
         is SendTarget.SharedPassphrase ->
-            TextImageCodec.renderEncryptedTextAsQr(text, WentuyiSettings.getPassphrase(service))
+            EncryptedQr(
+                TextImageCodec.renderEncryptedTextAsQr(text, WentuyiSettings.getPassphrase(service)),
+                noForwardSecrecy = false,
+            )
         is SendTarget.Contact -> {
-            val secret = KeyExchange.deriveSharedSecret(target.identity, target.contact.publicKey)
-            try {
-                TextImageCodec.renderEncryptedTextAsQr(text, secret)
-            } finally {
-                CryptoUtils.wipe(secret)
+            // Same ratchet-first / WTY4-fallback rule as the text path. The ratchet message
+            // key is consumed + persisted here; a never-scanned QR just becomes a skipped
+            // message on the receiver, which the ratchet tolerates.
+            val ratchet = RatchetSession.encryptText(service, target.identity, target.contact, text)
+            if (ratchet != null) {
+                EncryptedQr(TextImageCodec.renderEncryptedPayloadAsQr(ratchet), noForwardSecrecy = false)
+            } else {
+                val secret = KeyExchange.deriveSharedSecret(target.identity, target.contact.publicKey)
+                try {
+                    EncryptedQr(TextImageCodec.renderEncryptedTextAsQr(text, secret), noForwardSecrecy = true)
+                } finally {
+                    CryptoUtils.wipe(secret)
+                }
             }
         }
         is SendTarget.Unavailable -> throw IllegalStateException(target.reason)

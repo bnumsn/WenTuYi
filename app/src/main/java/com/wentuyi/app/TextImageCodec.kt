@@ -118,6 +118,14 @@ object TextImageCodec {
             "文图易加密图片", "扫码导入文图易解密") }
 
     /**
+     * Renders an **already-encrypted** payload string (e.g. a WTY5 ratchet message, whose
+     * key was already consumed) as QR bitmap(s). Unlike the key-based entries this can't
+     * re-encrypt with a fresh IV on ZXing-readback flakiness, so it renders deterministically.
+     */
+    fun renderEncryptedPayloadAsQr(payload: String): List<Bitmap> =
+        renderPayloadAsQr(payload, "文图易加密文字", "扫码导入文图易解密")
+
+    /**
      * Outer retry harness: if any chunk in the rendered set fails the per-bitmap
      * self-decode check, throw out of [renderPayloadAsQr] and rerun [block], which
      * re-encrypts with a fresh random IV/salt. Different ciphertext usually dodges

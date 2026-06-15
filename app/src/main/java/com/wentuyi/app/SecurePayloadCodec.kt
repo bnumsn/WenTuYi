@@ -223,7 +223,8 @@ object SecurePayloadCodec {
         payload.startsWith(PREFIX_V1) ||
             payload.startsWith(PREFIX_V2) ||
             payload.startsWith(PREFIX_V3) ||
-            payload.startsWith(PREFIX_V4)
+            payload.startsWith(PREFIX_V4) ||
+            payload.startsWith(DoubleRatchet.PREFIX_V5)  // ratchet messages travel as QR too
         )
 
     /**
