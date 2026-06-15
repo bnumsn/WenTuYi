@@ -28,9 +28,10 @@ import javax.crypto.spec.SecretKeySpec
  * long-term key can't recover past message keys — the chain keys that produced them are
  * already overwritten.
  *
- * [State] is mutated in place by [encrypt]/[decrypt]. For the trial-decrypt-across-contacts
- * flow, callers must [clone] the state, attempt [decrypt] on the copy, and commit the copy
- * only on success — a failed trial then leaves the real state untouched.
+ * [decrypt] is transactional: it works on an internal copy and commits back into the passed
+ * [State] only after the AEAD tag verifies, so a failed/forged message leaves the state
+ * untouched — the trial-decrypt-across-contacts flow can call it directly per contact with
+ * no defensive [clone]. [encrypt] advances [State] in place on success.
  */
 object DoubleRatchet {
     const val PREFIX_V5 = "WTY5:"
@@ -192,7 +193,7 @@ object DoubleRatchet {
         // unbounded. LinkedHashMap iteration is insertion order → evict the oldest first.
         while (state.skipped.size > MAX_SKIP_TOTAL) {
             val oldest = state.skipped.keys.iterator().next()
-            state.skipped.remove(oldest)
+            state.skipped.remove(oldest)?.let { CryptoUtils.wipe(it) }
         }
     }
 

@@ -15,8 +15,9 @@ import java.nio.charset.StandardCharsets
  *    the caller falls back to the WTY4 session-key path — still encrypted, just no PFS for
  *    those first message(s).
  *
- * Decrypt is non-destructive across contacts: each candidate is tried on a [DoubleRatchet.clone]
- * and committed only on success, so a wrong guess never corrupts a real session.
+ * Decrypt is non-destructive across contacts: [DoubleRatchet.decrypt] is transactional
+ * (commits only after the AEAD tag verifies), so a wrong-contact guess throws and never
+ * corrupts that contact's real session — no defensive clone needed.
  */
 object RatchetSession {
 

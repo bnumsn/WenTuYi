@@ -57,6 +57,7 @@ class CameraScanActivity : Activity() {
     private var analysisSize: Size = Size(1280, 720)
 
     @Volatile private var done = false
+    private var opening = false   // true between openCamera() and onOpened/onError, closes the re-entry window
     private val zxing = MultiFormatReader().apply {
         setHints(mapOf(DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE)))
     }
@@ -120,11 +121,13 @@ class CameraScanActivity : Activity() {
 
     private fun openCamera() {
         // Guard against a second open (surface-available + onResume/permission-result can
-        // both fire) leaking the prior ImageReader/device.
-        if (cameraDevice != null) return
+        // all fire) leaking the prior ImageReader/device. `opening` also covers the window
+        // between openCamera() and onOpened(), where cameraDevice is still null.
+        if (cameraDevice != null || opening) return
         runCatching { imageReader?.close() }; imageReader = null
         val manager = getSystemService(CAMERA_SERVICE) as CameraManager
         try {
+            opening = true
             val cameraId = manager.cameraIdList.firstOrNull {
                 manager.getCameraCharacteristics(it)
                     .get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK
@@ -149,12 +152,13 @@ class CameraScanActivity : Activity() {
 
     private val stateCallback = object : CameraDevice.StateCallback() {
         override fun onOpened(device: CameraDevice) {
+            opening = false
             cameraDevice = device
             startPreview(device)
         }
-        override fun onDisconnected(device: CameraDevice) { device.close(); cameraDevice = null }
+        override fun onDisconnected(device: CameraDevice) { opening = false; device.close(); cameraDevice = null }
         override fun onError(device: CameraDevice, error: Int) {
-            device.close(); cameraDevice = null; fail("相机错误：$error")
+            opening = false; device.close(); cameraDevice = null; fail("相机错误：$error")
         }
     }
 
@@ -247,6 +251,7 @@ class CameraScanActivity : Activity() {
     }
 
     private fun closeCamera() {
+        opening = false
         runCatching { captureSession?.close() }; captureSession = null
         runCatching { cameraDevice?.close() }; cameraDevice = null
         runCatching { imageReader?.close() }; imageReader = null

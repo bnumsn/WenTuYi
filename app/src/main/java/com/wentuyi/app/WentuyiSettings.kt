@@ -215,8 +215,14 @@ object WentuyiSettings {
             .putString(key, ENCRYPTED_PREFIX + Base64.encodeToString(packed, Base64.NO_WRAP))
         // Ratchet state MUST be durable before the ciphertext it produced is sent — an
         // async apply() that loses the write across a crash would re-derive the same
-        // message key/nonce on restart (AES-GCM nonce reuse). commit() writes synchronously.
-        if (synchronous) editor.commit() else editor.apply()
+        // message key/nonce on restart (AES-GCM nonce reuse). commit() writes synchronously
+        // AND returns false (without throwing) on failure — treat that as a hard failure so
+        // the caller aborts the send rather than emitting ciphertext for unpersisted state.
+        if (synchronous) {
+            if (!editor.commit()) throw GeneralSecurityException("同步保存失败")
+        } else {
+            editor.apply()
+        }
     }
 
     @Throws(GeneralSecurityException::class)

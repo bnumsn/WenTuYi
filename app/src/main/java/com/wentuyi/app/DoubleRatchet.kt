@@ -17,8 +17,9 @@ import org.json.JSONObject
  *
  * Forward secrecy + post-compromise recovery over the app's async/lossy/no-server channel.
  * Roles are deterministic by public-key order; the initial root key reuses the SAS-verified
- * X25519 identity ECDH; sender identity is NOT in the ciphertext (the receiver trial-decrypts
- * each contact on a [clone], committing only on success).
+ * X25519 identity ECDH; sender identity is NOT in the ciphertext. [decrypt] is transactional
+ * (commits into the passed [State] only after the AEAD tag verifies), so the receiver can
+ * trial-decrypt each contact directly without a defensive [clone].
  */
 object DoubleRatchet {
     const val PREFIX_V5 = "WTY5:"
@@ -166,7 +167,7 @@ object DoubleRatchet {
         // Global cap on the persisted skipped-key cache; evict oldest (insertion order).
         while (state.skipped.size > MAX_SKIP_TOTAL) {
             val oldest = state.skipped.keys.iterator().next()
-            state.skipped.remove(oldest)
+            state.skipped.remove(oldest)?.let { CryptoUtils.wipe(it) }
         }
     }
 
