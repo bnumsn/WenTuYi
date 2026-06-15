@@ -214,6 +214,10 @@ object SecurePayloadCodec {
         }
     }
 
+    /** Wraps already-decrypted plaintext (e.g. from the Double Ratchet) as a TEXT payload. */
+    @JvmStatic
+    fun textPayload(data: ByteArray): DecryptedPayload = DecryptedPayload(TYPE_TEXT, data)
+
     @JvmStatic
     fun isPayload(payload: String?): Boolean = payload != null && (
         payload.startsWith(PREFIX_V1) ||

@@ -276,6 +276,34 @@ class WentuyiSmokeTests {
         // ScanActivity/DecryptActivity never reaches saveContact.
     }
 
+    @Test fun ratchet_app_bidirectional_round_trip() {
+        // Exercises the app DoubleRatchet port + serialize/deserialize directly.
+        val a = KeyExchange.getOrCreateIdentity(context)            // device identity
+        val b = generateIdentity()                                  // a peer
+        val aliceIsA = DoubleRatchet.isInitiator(a.publicKey, b.publicKey)
+        val aliceId = if (aliceIsA) a else b
+        val bobId = if (aliceIsA) b else a
+        var alice = DoubleRatchet.initAlice(
+            DoubleRatchet.initialRootKey(aliceId, bobId.publicKey), bobId.publicKey)
+        var bob = DoubleRatchet.initBob(
+            DoubleRatchet.initialRootKey(bobId, aliceId.publicKey), bobId)
+
+        val m1 = DoubleRatchet.encrypt(alice, "棘轮你好".toByteArray(Charsets.UTF_8))
+        assertTrue(m1.startsWith(DoubleRatchet.PREFIX_V5))
+        // round-trip the receiver state through serialize/deserialize before decrypting
+        bob = DoubleRatchet.deserialize(DoubleRatchet.serialize(bob))
+        assertEquals("棘轮你好", String(DoubleRatchet.decrypt(bob, m1), Charsets.UTF_8))
+
+        // Bob replies; persist Alice's state across the boundary too.
+        val r1 = DoubleRatchet.encrypt(bob, "收到".toByteArray(Charsets.UTF_8))
+        alice = DoubleRatchet.deserialize(DoubleRatchet.serialize(alice))
+        assertEquals("收到", String(DoubleRatchet.decrypt(alice, r1), Charsets.UTF_8))
+
+        // Replay of a consumed message must fail (forward secrecy).
+        try { DoubleRatchet.decrypt(bob, m1); fail("replay must reject") }
+        catch (e: Exception) { /* expected */ }
+    }
+
     @Test fun sas_is_eight_digits() {
         val alice = generateIdentity()
         val bob = generateIdentity()

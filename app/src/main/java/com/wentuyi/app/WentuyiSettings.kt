@@ -136,6 +136,34 @@ object WentuyiSettings {
         prefs(context).edit().putString(KEY_CONTACTS_JSON, json).apply()
     }
 
+    // ─── Per-contact Double Ratchet state (Keystore-wrapped, keyed by fingerprint) ──
+
+    private fun ratchetKey(fingerprint: String) = "ratchet_$fingerprint"
+
+    /** Returns the serialized ratchet state for [fingerprint], or null if none/corrupt. */
+    fun loadRatchet(context: Context, fingerprint: String): String? {
+        val encrypted = prefs(context).getString(ratchetKey(fingerprint), null) ?: return null
+        return try {
+            decryptKeystoreString(encrypted)
+        } catch (e: Exception) {
+            // Corrupt ratchet state is unrecoverable — drop it so a fresh session re-bootstraps.
+            prefs(context).edit().remove(ratchetKey(fingerprint)).apply()
+            null
+        }
+    }
+
+    fun saveRatchet(context: Context, fingerprint: String, json: String) {
+        try {
+            putKeystoreString(prefs(context), ratchetKey(fingerprint), json)
+        } catch (e: GeneralSecurityException) {
+            throw IllegalStateException("棘轮状态保存失败", e)
+        }
+    }
+
+    fun clearRatchet(context: Context, fingerprint: String) {
+        prefs(context).edit().remove(ratchetKey(fingerprint)).apply()
+    }
+
     /**
      * Subscribes [onChanged] to contact-list mutations (rename / delete / add). Used
      * by the IME so its [cachedContacts] doesn't go stale while the user is editing

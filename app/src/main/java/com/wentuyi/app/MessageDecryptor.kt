@@ -36,6 +36,9 @@ object MessageDecryptor {
     }
 
     fun decrypt(context: Context, payload: String): Result {
+        if (payload.startsWith(DoubleRatchet.PREFIX_V5)) {
+            return decryptWithRatchet(context, payload)
+        }
         if (!SecurePayloadCodec.isPayload(payload)) {
             return Result.Failure(Reason.UNKNOWN_FORMAT, "不是文图易加密内容")
         }
@@ -45,6 +48,25 @@ object MessageDecryptor {
         } else {
             decryptWithSharedPassphrase(context, payload)
         }
+    }
+
+    /** WTY5 (Double Ratchet): trial-decrypt non-destructively against each contact. */
+    private fun decryptWithRatchet(context: Context, payload: String): Result {
+        val identity = try {
+            KeyExchange.loadIdentity(context)
+        } catch (e: Exception) {
+            return Result.Failure(Reason.NO_IDENTITY, "身份密钥读取失败：${e.message}")
+        } ?: return Result.Failure(Reason.NO_IDENTITY, "收到棘轮加密消息，但你还没生成身份码")
+
+        val contacts = KeyExchange.listContacts(context)
+        if (contacts.isEmpty()) return Result.Failure(Reason.NO_CONTACTS, "棘轮加密消息需要先扫码加好友")
+
+        for (contact in contacts) {
+            val plain = RatchetSession.tryDecrypt(context, identity, contact, payload) ?: continue
+            return Result.Success(SecurePayloadCodec.textPayload(plain), contact)
+        }
+        return Result.Failure(Reason.CONTACT_NOT_FOUND,
+            "试遍 ${contacts.size} 位联系人都无法解密 — 也许对方还没把你加为联系人，或消息损坏")
     }
 
     private fun decryptWithSharedPassphrase(context: Context, payload: String): Result {

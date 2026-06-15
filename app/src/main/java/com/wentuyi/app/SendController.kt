@@ -159,12 +159,18 @@ class SendController(
         is SendTarget.SharedPassphrase ->
             SecurePayloadCodec.encryptTextToPayload(text, WentuyiSettings.getPassphrase(service))
         is SendTarget.Contact -> {
-            val secret = KeyExchange.deriveSharedSecret(target.identity, target.contact.publicKey)
-            try {
-                SecurePayloadCodec.encryptTextWithSessionKey(text, secret)
-            } finally {
-                CryptoUtils.wipe(secret)
-            }
+            // Prefer the Double Ratchet (WTY5, forward-secret). Falls back to the WTY4
+            // session key only when the ratchet has no sending chain yet (responder before
+            // it has received the initiator's first message).
+            RatchetSession.encryptText(service, target.identity, target.contact, text)
+                ?: run {
+                    val secret = KeyExchange.deriveSharedSecret(target.identity, target.contact.publicKey)
+                    try {
+                        SecurePayloadCodec.encryptTextWithSessionKey(text, secret)
+                    } finally {
+                        CryptoUtils.wipe(secret)
+                    }
+                }
         }
         // Defensive: callers reject Unavailable before encrypting; never downgrade here.
         is SendTarget.Unavailable -> throw IllegalStateException(target.reason)
