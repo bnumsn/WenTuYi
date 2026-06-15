@@ -163,7 +163,7 @@ adb shell ime set com.wentuyi.app/.TextImageImeService
 **其他已知限制**：
 - QR Code 解码已能容忍 JPEG q=80 的重压缩（smoke test 覆盖），但极低质量 (q≤40)、严重裁剪、二次摄屏仍可能失败 — 真机逐项验证微信/QQ/钉钉/飞书/Telegram/WhatsApp 的实际表现，并补充兼容性矩阵。
 - 加密大图仍需要切多张 QR（每张 ≤ ~800 字节 payload）；v0.5 起 chunk-id 由 SHA-256(payload) 派生，重组时校验，可阻止 chunk 拼接攻击。
-- ScanActivity 当前只从相册/系统图片选择器读取 — 实时摄像头预览需要 `android.hardware.camera2` 自实现（避免引入 CameraX/AndroidX）；待 v0.6 评估。
+- v0.6 起新增 `CameraScanActivity` 实时摄像头扫码（`android.hardware.camera2` + ZXing 自实现，不引入 CameraX/AndroidX）：预览后台线程从 Y 平面解码首个 QR，文本交回 `ScanActivity.routeScannedTexts` 统一路由。⚠ 该路径依赖真实摄像头，未纳入 CI/instrumentation 自动化，需真机对二维码逐项实测。仍保留相册/图片选择器导入。
 - Debug 构建保留默认 passphrase 仅用于开发体验；Release 构建必须先保存身份码或共享密钥。
 - X25519 私钥目前仅靠 Keystore-wrapped SharedPreferences 保护；可考虑直接用 `KeyProperties.KEY_ALGORITHM_EC` 的硬件支持密钥（API 31+）。
 

@@ -40,6 +40,7 @@ class ScanActivity : Activity() {
     companion object {
         private const val REQ_PICK = 301
         private const val REQ_CAPTURE = 302
+        private const val REQ_CAMERA = 303
     }
 
     private val scope: CoroutineScope = MainScope()
@@ -65,6 +66,10 @@ class ScanActivity : Activity() {
                 if (uris.isNotEmpty()) scanAll(uris)
             }
             REQ_CAPTURE -> captureUri?.let { scanAll(listOf(it)) }
+            REQ_CAMERA -> data?.getStringExtra(CameraScanActivity.EXTRA_QR_TEXT)?.let { text ->
+                statusView.text = "已扫到二维码，正在识别…"
+                scope.launch { routeScannedTexts(listOf(text)) }
+            }
         }
     }
 
@@ -90,10 +95,8 @@ class ScanActivity : Activity() {
         statusView = subtle("选择二维码图片，文图易会自动识别是身份码还是加密内容。")
         root.addView(statusView, matchWrapWithTop(8))
 
-        root.addView(button("从图库选择") { pickFromGallery() }, matchWrapWithTop(18))
-        // Camera capture omitted from MVP to keep the AOSP-only profile — the system
-        // image picker covers screenshots and gallery-saved QR images, which is the
-        // primary flow.
+        root.addView(button("实时扫码（相机）") { launchCameraScan() }, matchWrapWithTop(18))
+        root.addView(button("从图库选择") { pickFromGallery() }, matchWrapWithTop(10))
 
         preview = ImageView(this).apply {
             adjustViewBounds = true
@@ -117,6 +120,10 @@ class ScanActivity : Activity() {
 
     private fun pickFromGallery() {
         IntentHelpers.pickImage(this, REQ_PICK, allowMultiple = true, "选择二维码图片")
+    }
+
+    private fun launchCameraScan() {
+        startActivityForResult(Intent(this, CameraScanActivity::class.java), REQ_CAMERA)
     }
 
     private fun scanAll(uris: List<Uri>) {

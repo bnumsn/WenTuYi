@@ -3,6 +3,10 @@
         android:name="android.software.input_methods"
         android:required="false" />
 
+    <!-- Real-time QR scan (camera2). Optional so the IME still installs on camera-less devices. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
+
     <queries>
         <intent>
             <action android:name="android.intent.action.SEND" />
@@ -62,6 +66,12 @@
             android:name=".ScanActivity"
             android:exported="false"
             android:label="扫码 / 导入二维码" />
+
+        <activity
+            android:name=".CameraScanActivity"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:label="实时扫码" />
 
         <activity
             android:name=".DecryptActivity"
