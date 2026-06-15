@@ -63,9 +63,17 @@ class SendController(
             val contact: KeyExchange.Contact,
             val identity: KeyExchange.Identity,
         ) : SendTarget()
+
+        /**
+         * Target resolution failed (selected contact vanished, identity key unreadable,
+         * …). The send is refused with [reason] — we must **never** silently fall back to
+         * the shared passphrase, or a message the user thinks is going to a verified
+         * contact could become readable by everyone who knows the old shared key.
+         */
+        data class Unavailable(val reason: String) : SendTarget()
     }
 
-    private data class TargetAnchor(val packageName: String?, val sessionId: Long)
+    private data class TargetAnchor(val packageName: String?, val sessionId: Long, val fieldId: Int)
 
     fun commitPlainText(text: String) {
         if (text.isEmpty()) { onStatus("没有文字"); return }
@@ -96,7 +104,7 @@ class SendController(
         if (text.isEmpty()) { onStatus("没有文字"); return }
         val anchor = captureAnchor() ?: run { onStatus("当前输入框不可写"); return }
         val target = resolveSendTarget()
-        rejectUnverifiedTarget(target)?.let { onStatus(it); return }
+        rejectTarget(target)?.let { onStatus(it); return }
         onStatus(progressLabel("正在加密文字...", target))
         scope.launch {
             try {
@@ -112,7 +120,7 @@ class SendController(
         if (text.isEmpty()) { onStatus("没有文字"); return }
         val anchor = captureAnchor() ?: run { onStatus("当前输入框不可写"); return }
         val target = resolveSendTarget()
-        rejectUnverifiedTarget(target)?.let { onStatus(it); return }
+        rejectTarget(target)?.let { onStatus(it); return }
         onStatus(progressLabel("正在生成加密二维码...", target))
         scope.launch {
             try {
@@ -147,6 +155,8 @@ class SendController(
                 CryptoUtils.wipe(secret)
             }
         }
+        // Defensive: callers reject Unavailable before encrypting; never downgrade here.
+        is SendTarget.Unavailable -> throw IllegalStateException(target.reason)
     }
 
     private fun encryptToQrBitmaps(text: String, target: SendTarget) = when (target) {
@@ -160,6 +170,7 @@ class SendController(
                 CryptoUtils.wipe(secret)
             }
         }
+        is SendTarget.Unavailable -> throw IllegalStateException(target.reason)
     }
 
     // ─── Delivery primitives ─────────────────────────────────────────────────
@@ -243,10 +254,20 @@ class SendController(
             return
         }
 
-        // Couldn't inline-insert: send straight to the app still in focus, else chooser.
+        // Couldn't inline-insert. Clear the original plaintext first — it's being
+        // replaced by an out-of-band encrypted image, so leaving it in the box risks the
+        // user sending the cleartext by accident — then share. Restore it if the share
+        // never launches. Only touch the field if the anchor is still the live target.
+        val connection = service.currentInputConnection
+        val clearedSource = connection != null && sourceText != null &&
+            anchorStillCurrent(anchor) && clearVisibleTextIfMatches(connection, sourceText)
         val preferred = anchor.packageName.takeIf { anchorStillCurrent(anchor) }
         val shared = shareImages(uris, preferred)
-        if (shared) onStatus(sharedOk)
+        if (shared) {
+            onStatus(sharedOk)
+        } else if (clearedSource && sourceText != null) {
+            restoreVisibleText(connection, sourceText)
+        }
         // else: startChooser already set "没有可用的分享应用".
     }
 
@@ -311,12 +332,17 @@ class SendController(
 
     private fun captureAnchor(): TargetAnchor? {
         val ei = service.currentInputEditorInfo ?: return null
-        return TargetAnchor(ei.packageName, currentSessionId())
+        // fieldId is unreliable in WeChat/Telegram (always 0) so it can't be the sole
+        // signal, but when an app *does* populate it, requiring it to match tightens
+        // drift detection within a reused input session — it never loosens it.
+        return TargetAnchor(ei.packageName, currentSessionId(), ei.fieldId)
     }
 
     private fun anchorStillCurrent(anchor: TargetAnchor): Boolean {
         val current = captureAnchor() ?: return false
-        return current.packageName == anchor.packageName && current.sessionId == anchor.sessionId
+        return current.packageName == anchor.packageName &&
+            current.sessionId == anchor.sessionId &&
+            current.fieldId == anchor.fieldId
     }
 
     // ─── Share-sheet fallback ────────────────────────────────────────────────
@@ -324,7 +350,10 @@ class SendController(
     private fun shareImages(uris: List<Uri>, preferredPackage: String?): Boolean {
         if (uris.isEmpty()) return false
         val share = buildShareIntent(uris)
-        grantSharePermissions(share, uris)
+        // No blanket pre-grant to every app that *could* handle the intent — that left a
+        // read grant on the cached PNG for far more packages than ever receive it. The
+        // intent's FLAG_GRANT_READ_URI_PERMISSION (+ clipData) grants transiently to only
+        // the component that actually receives it; directShareTo grants to its one pkg.
         // Drop straight into the app the user is composing in (WeChat/QQ) so it opens
         // that app's "send to contact" screen — no chooser step. Chooser is the fallback.
         if (preferredPackage != null && directShareTo(share, preferredPackage, uris)) return true
@@ -381,35 +410,27 @@ class SendController(
         }
     }
 
-    private fun grantSharePermissions(intent: Intent, uris: List<Uri>) {
-        val pm = service.packageManager
-        val targets = pm.queryIntentActivities(intent, PackageManager.MATCH_DEFAULT_ONLY)
-        for (target in targets) {
-            val pkg = target.activityInfo?.packageName ?: continue
-            for (u in uris) {
-                service.grantUriPermission(pkg, u, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
-        }
-    }
-
     private fun targetLabel(target: SendTarget): String = when (target) {
         is SendTarget.SharedPassphrase -> "共享密钥"
         is SendTarget.Contact ->
             if (target.contact.verified) target.contact.name else "${target.contact.name}（未验证）"
+        is SendTarget.Unavailable -> "不可用"
     }
 
-    private fun rejectUnverifiedTarget(target: SendTarget): String? =
-        if (target is SendTarget.Contact && !target.contact.verified) {
+    /** Returns a refusal message if [target] must not be sent to, else null. */
+    private fun rejectTarget(target: SendTarget): String? = when {
+        target is SendTarget.Unavailable -> target.reason
+        target is SendTarget.Contact && !target.contact.verified ->
             "联系人 ${target.contact.name} 未验证；请先到主 App 核对 SAS 后再发送"
-        } else {
-            null
-        }
+        else -> null
+    }
 
+    // Reachable only after rejectTarget() has cleared the target, so Contact is always
+    // verified and Unavailable never gets here.
     private fun progressLabel(base: String, target: SendTarget): String = when (target) {
-        is SendTarget.Contact ->
-            if (target.contact.verified) "$base (${target.contact.name})"
-            else "$base 未验证联系人：${target.contact.name}"
+        is SendTarget.Contact -> "$base (${target.contact.name})"
         is SendTarget.SharedPassphrase -> "$base (共享密钥)"
+        is SendTarget.Unavailable -> base
     }
 
     private fun Exception.userMessage(): String =

@@ -31,6 +31,8 @@ object SecurePayloadCodec {
     private const val V3_HEADER_LEN = 1 + 1 + 1 + SALT_BYTES + IV_BYTES
 
     private val SESSION_HKDF_INFO = "WTY3-session-v1".toByteArray(StandardCharsets.US_ASCII)
+    private val IMAGE_PAGE_MAGIC = "WTYIPG1".toByteArray(StandardCharsets.US_ASCII)
+    private val IMAGE_CHUNK_MAGIC = "WTYICH1".toByteArray(StandardCharsets.US_ASCII)
 
     fun encryptTextToPayload(plainText: String, passphrase: String): String =
         encryptBytes(TYPE_TEXT, plainText.toByteArray(StandardCharsets.UTF_8), passphrase = passphrase)
@@ -43,6 +45,22 @@ object SecurePayloadCodec {
 
     fun encryptTextWithSessionKey(plainText: String, sessionKey: ByteArray): String =
         encryptBytes(TYPE_TEXT, plainText.toByteArray(StandardCharsets.UTF_8), sessionKey = sessionKey)
+
+    /** Encrypt one page of a multi-page encrypted image (parity with the Android app). */
+    fun encryptImagePageToPayload(imageBytes: ByteArray, pageNumber: Int, pageTotal: Int, passphrase: String): String {
+        require(imageBytes.isNotEmpty()) { "image is empty" }
+        require(pageNumber in 1..pageTotal && pageTotal >= 1) { "page index invalid" }
+        return encryptBytes(TYPE_IMAGE_PAGE, packImagePage(imageBytes, pageNumber, pageTotal), passphrase = passphrase)
+    }
+
+    /** Encrypt one chunk of a chunked encrypted image (parity with the Android app). */
+    fun encryptImageChunkToPayload(
+        imageBytes: ByteArray, chunkNumber: Int, chunkTotal: Int, totalBytes: Int, passphrase: String,
+    ): String {
+        require(imageBytes.isNotEmpty()) { "image chunk is empty" }
+        require(chunkNumber in 1..chunkTotal && chunkTotal >= 1 && totalBytes > 0) { "chunk index invalid" }
+        return encryptBytes(TYPE_IMAGE_CHUNK, packImageChunk(imageBytes, chunkNumber, chunkTotal, totalBytes), passphrase = passphrase)
+    }
 
     fun decryptEnvelopeWithSessionKey(payload: String?, sessionKey: ByteArray): DecryptedPayload {
         require(sessionKey.size == KEY_BYTES) { "session key must be 32 bytes" }
@@ -149,13 +167,20 @@ object SecurePayloadCodec {
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(aesKey, "AES"), GCMParameterSpec(GCM_TAG_BITS, iv))
             cipher.updateAAD(header)
-            return DecryptedPayload(type, cipher.doFinal(ciphertext))
+            val plain = cipher.doFinal(ciphertext)
+            return when (type) {
+                TYPE_IMAGE_PAGE -> unpackImagePage(plain)
+                TYPE_IMAGE_CHUNK -> unpackImageChunk(plain)
+                else -> DecryptedPayload(type, plain)
+            }
         } finally {
             CryptoUtils.wipe(aesKey)
             CryptoUtils.wipe(passphraseBytes)
         }
     }
 
+    // Legacy: v2/v1 `type` byte is unauthenticated (no AAD). Flipping it is a type-
+    // confusion/DoS only, not forgery; v3 binds the header into the GCM AAD. Migration-only.
     private fun decryptV2(payload: String, passphrase: String): DecryptedPayload {
         val packed = Encoding.b64Decode(payload.substring(PREFIX_V2.length))
         if (packed.size <= 2 + SALT_BYTES + IV_BYTES) throw GeneralSecurityException("payload incomplete")
@@ -192,8 +217,75 @@ object SecurePayloadCodec {
         require(!passphrase.isNullOrBlank()) { "passphrase is blank" }
     }
 
-    class DecryptedPayload internal constructor(val type: Int, val data: ByteArray) {
+    class DecryptedPayload internal constructor(
+        val type: Int,
+        val data: ByteArray,
+        val pageNumber: Int = 0,
+        val pageTotal: Int = 0,
+        val totalBytes: Int = 0,
+    ) {
         fun isText(): Boolean = type == TYPE_TEXT
+        fun isImage(): Boolean = type == TYPE_IMAGE || type == TYPE_IMAGE_PAGE
+        fun isImagePage(): Boolean = type == TYPE_IMAGE_PAGE
+        fun isImageChunk(): Boolean = type == TYPE_IMAGE_CHUNK
         fun text(): String = String(data, StandardCharsets.UTF_8)
+    }
+
+    // ─── Image page / chunk packers + unpackers (match Android app for parity) ───────
+
+    private fun packImagePage(imageBytes: ByteArray, pageNumber: Int, pageTotal: Int): ByteArray {
+        val out = ByteArray(IMAGE_PAGE_MAGIC.size + 8 + imageBytes.size)
+        System.arraycopy(IMAGE_PAGE_MAGIC, 0, out, 0, IMAGE_PAGE_MAGIC.size)
+        writeInt(out, IMAGE_PAGE_MAGIC.size, pageNumber)
+        writeInt(out, IMAGE_PAGE_MAGIC.size + 4, pageTotal)
+        System.arraycopy(imageBytes, 0, out, IMAGE_PAGE_MAGIC.size + 8, imageBytes.size)
+        return out
+    }
+
+    private fun packImageChunk(imageBytes: ByteArray, chunkNumber: Int, chunkTotal: Int, totalBytes: Int): ByteArray {
+        val out = ByteArray(IMAGE_CHUNK_MAGIC.size + 12 + imageBytes.size)
+        System.arraycopy(IMAGE_CHUNK_MAGIC, 0, out, 0, IMAGE_CHUNK_MAGIC.size)
+        writeInt(out, IMAGE_CHUNK_MAGIC.size, chunkNumber)
+        writeInt(out, IMAGE_CHUNK_MAGIC.size + 4, chunkTotal)
+        writeInt(out, IMAGE_CHUNK_MAGIC.size + 8, totalBytes)
+        System.arraycopy(imageBytes, 0, out, IMAGE_CHUNK_MAGIC.size + 12, imageBytes.size)
+        return out
+    }
+
+    private fun unpackImagePage(packed: ByteArray): DecryptedPayload {
+        val headerLen = IMAGE_PAGE_MAGIC.size + 8
+        if (packed.size <= headerLen) throw GeneralSecurityException("image page incomplete")
+        for (i in IMAGE_PAGE_MAGIC.indices)
+            if (packed[i] != IMAGE_PAGE_MAGIC[i]) throw GeneralSecurityException("unsupported image page format")
+        val pageNumber = readInt(packed, IMAGE_PAGE_MAGIC.size)
+        val pageTotal = readInt(packed, IMAGE_PAGE_MAGIC.size + 4)
+        if (pageNumber !in 1..pageTotal || pageTotal < 1) throw GeneralSecurityException("image page index out of range")
+        return DecryptedPayload(TYPE_IMAGE_PAGE, Arrays.copyOfRange(packed, headerLen, packed.size), pageNumber, pageTotal)
+    }
+
+    private fun unpackImageChunk(packed: ByteArray): DecryptedPayload {
+        val headerLen = IMAGE_CHUNK_MAGIC.size + 12
+        if (packed.size <= headerLen) throw GeneralSecurityException("image chunk incomplete")
+        for (i in IMAGE_CHUNK_MAGIC.indices)
+            if (packed[i] != IMAGE_CHUNK_MAGIC[i]) throw GeneralSecurityException("unsupported image chunk format")
+        val chunkNumber = readInt(packed, IMAGE_CHUNK_MAGIC.size)
+        val chunkTotal = readInt(packed, IMAGE_CHUNK_MAGIC.size + 4)
+        val totalBytes = readInt(packed, IMAGE_CHUNK_MAGIC.size + 8)
+        if (chunkNumber !in 1..chunkTotal || chunkTotal < 1 || totalBytes <= 0)
+            throw GeneralSecurityException("image chunk index out of range")
+        return DecryptedPayload(TYPE_IMAGE_CHUNK, Arrays.copyOfRange(packed, headerLen, packed.size), chunkNumber, chunkTotal, totalBytes)
+    }
+
+    private fun readInt(src: ByteArray, offset: Int): Int =
+        ((src[offset].toInt() and 0xFF) shl 24) or
+            ((src[offset + 1].toInt() and 0xFF) shl 16) or
+            ((src[offset + 2].toInt() and 0xFF) shl 8) or
+            (src[offset + 3].toInt() and 0xFF)
+
+    private fun writeInt(target: ByteArray, offset: Int, value: Int) {
+        target[offset] = (value ushr 24).toByte()
+        target[offset + 1] = (value ushr 16).toByte()
+        target[offset + 2] = (value ushr 8).toByte()
+        target[offset + 3] = value.toByte()
     }
 }

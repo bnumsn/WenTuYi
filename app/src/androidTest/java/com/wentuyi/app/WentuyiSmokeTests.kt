@@ -257,6 +257,26 @@ class WentuyiSmokeTests {
         // ScanActivity/DecryptActivity never reaches saveContact.
     }
 
+    @Test fun sas_is_eight_digits() {
+        val alice = generateIdentity()
+        val bob = generateIdentity()
+        val sas = KeyExchange.shortAuthString(alice, bob.publicKey)
+        assertEquals("SAS must be 8 digits", 8, sas.length)
+        assertTrue("SAS is all digits", sas.all { it.isDigit() })
+        // Both peers must still agree after the widening to 8 digits.
+        assertEquals(sas, KeyExchange.shortAuthString(bob, alice.publicKey))
+    }
+
+    @Test fun image_page_envelope_round_trips_with_metadata() {
+        val img = ByteArray(48) { (it * 5).toByte() }
+        val payload = SecurePayloadCodec.encryptImagePageToPayload(img, 2, 4, PASSPHRASE)
+        val decrypted = SecurePayloadCodec.decryptEnvelope(payload, PASSPHRASE)
+        assertTrue("is image page", decrypted.isImagePage())
+        assertEquals(2, decrypted.pageNumber)
+        assertEquals(4, decrypted.pageTotal)
+        assertArrayEquals(img, decrypted.data)
+    }
+
     // ─── Plain artefacts + provider ─────────────────────────────────────────
 
     @Test fun plain_text_image_renders() {

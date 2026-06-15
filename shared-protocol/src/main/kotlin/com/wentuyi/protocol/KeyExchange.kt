@@ -86,7 +86,7 @@ object KeyExchange {
                 ((derived[1].toInt() and 0xFF) shl 16) or
                 ((derived[2].toInt() and 0xFF) shl 8) or
                 (derived[3].toInt() and 0xFF)
-            return (asInt % 1_000_000).toString().padStart(6, '0')
+            return (asInt % 100_000_000).toString().padStart(8, '0')
         } finally {
             CryptoUtils.wipe(ecdh)
         }

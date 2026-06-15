@@ -10,6 +10,8 @@ import android.graphics.Bitmap
 import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.text.InputType
 import android.util.TypedValue
 import android.view.View
@@ -33,7 +35,7 @@ import kotlinx.coroutines.withContext
  *
  * The X25519 identity QR is the recommended path: scan a peer's identity from
  * [ScanActivity] to derive a deterministic session key and verify out-of-band via
- * the 6-digit SAS. The "共享密钥" controls remain for users who haven't migrated.
+ * the 8-digit SAS. The "共享密钥" controls remain for users who haven't migrated.
  */
 class KeyManagementActivity : Activity() {
 
@@ -167,7 +169,7 @@ class KeyManagementActivity : Activity() {
                 LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
             row.addView(nameRow, matchWrap())
             row.addView(subtle("指纹：${contact.fingerprint}"), matchWrapWithTop(2))
-            row.addView(subtle("校验码：$sas — 双方设备应显示完全相同的 6 位数字"), matchWrapWithTop(2))
+            row.addView(subtle("校验码：$sas — 双方设备应显示完全相同的 8 位数字"), matchWrapWithTop(2))
             if (!contact.verified) {
                 row.addView(subtle("⚠ 未口外比对 SAS 前请勿用于敏感消息，可能存在中间人攻击").apply {
                     setTextColor(KeyboardUi.COLOR_DANGER)
@@ -212,7 +214,7 @@ class KeyManagementActivity : Activity() {
             AlertDialog.Builder(this)
                 .setTitle("确认「${contact.name}」的校验码")
                 .setMessage(
-                    "对方设备应该显示完全相同的 6 位数字：\n\n" +
+                    "对方设备应该显示完全相同的 8 位数字：\n\n" +
                         "    $sas\n\n" +
                         "请通过电话、当面或其他可信渠道（不要通过同一个聊天 App）核对一致后点击确认。\n\n" +
                         "数字不一致说明你扫到的不是对方本人的身份码 — 你们之间可能有中间人。"
@@ -339,7 +341,19 @@ class KeyManagementActivity : Activity() {
                     .setPositiveButton("复制到剪贴板") { _, _ ->
                         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
                         clipboard?.setPrimaryClip(ClipData.newPlainText("文图易身份备份码", backup))
-                        statusView.text = "备份码已复制（注意：剪贴板可能被其他 App 读到，建议手抄）"
+                        statusView.text = "备份码已复制（注意：剪贴板可能被其他 App 读到，建议手抄；60 秒后自动清除）"
+                        // The backup string is the private key in plaintext. Auto-clear it
+                        // from the clipboard after 60s so it doesn't linger for clipboard
+                        // sniffers. Only clear if it's still our value (don't clobber what
+                        // the user copied since). App-process Handler, survives this dialog.
+                        Handler(Looper.getMainLooper()).postDelayed({
+                            val cb = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return@postDelayed
+                            val current = cb.primaryClip?.takeIf { it.itemCount > 0 }
+                                ?.getItemAt(0)?.coerceToText(this@KeyManagementActivity)?.toString()
+                            if (current == backup) {
+                                cb.setPrimaryClip(ClipData.newPlainText("", ""))
+                            }
+                        }, 60_000)
                     }
                     .setNegativeButton("关闭", null)
                     .create()

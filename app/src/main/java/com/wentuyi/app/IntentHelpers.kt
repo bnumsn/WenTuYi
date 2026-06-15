@@ -3,9 +3,7 @@ package com.wentuyi.app
 import android.app.Activity
 import android.content.ActivityNotFoundException
 import android.content.ClipData
-import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 
@@ -71,7 +69,6 @@ internal object IntentHelpers {
             clipData = ClipData.newUri(activity.contentResolver, title, uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        grantSharePermissions(activity, share, listOf(uri))
         return startChooser(activity, share, title)
     }
 
@@ -87,25 +84,17 @@ internal object IntentHelpers {
             clipData = clip
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        grantSharePermissions(activity, share, uris)
         return startChooser(activity, share, title)
     }
 
+    // The share intent carries FLAG_GRANT_READ_URI_PERMISSION + clipData, so the system
+    // grants a transient read only to the app the user actually picks in the chooser. We
+    // deliberately don't pre-grant to every package that *could* handle the intent — that
+    // left a lingering read on the cached PNG for far more apps than ever receive it.
     private fun startChooser(activity: Activity, share: Intent, title: String): Boolean {
         val chooser = Intent.createChooser(share, title).apply {
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
         return try { activity.startActivity(chooser); true } catch (e: ActivityNotFoundException) { false }
-    }
-
-    private fun grantSharePermissions(context: Context, intent: Intent, uris: List<Uri>) {
-        val pm = context.packageManager
-        val targets = pm.queryIntentActivities(intent, PackageManager.MATCH_DEFAULT_ONLY)
-        for (target in targets) {
-            val pkg = target.activityInfo?.packageName ?: continue
-            for (u in uris) {
-                context.grantUriPermission(pkg, u, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
-        }
     }
 }

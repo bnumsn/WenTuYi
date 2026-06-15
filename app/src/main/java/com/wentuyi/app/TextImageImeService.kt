@@ -481,13 +481,13 @@ class TextImageImeService : InputMethodService() {
 
     private fun resolveSendTarget(): SendController.SendTarget {
         if (sendTargetIndex == 0) return SendController.SendTarget.SharedPassphrase
-        val list = contacts()
-        val contact = list.getOrNull(sendTargetIndex - 1) ?: run {
-            sendTargetIndex = 0
-            return SendController.SendTarget.SharedPassphrase
-        }
+        // The user picked a specific contact. If we can't honour that exactly, refuse —
+        // never silently re-encrypt to the shared passphrase, which everyone holding the
+        // old shared key could read. Fail closed and tell the user to re-pick.
+        val contact = contacts().getOrNull(sendTargetIndex - 1)
+            ?: return SendController.SendTarget.Unavailable("所选联系人已不存在，请长按加密图标重新选择目标")
         val identity = runCatching { KeyExchange.loadIdentity(this) }.getOrNull()
-            ?: return SendController.SendTarget.SharedPassphrase
+            ?: return SendController.SendTarget.Unavailable("身份密钥读取失败，无法按联系人加密；请到主 App 检查身份")
         return SendController.SendTarget.Contact(contact, identity)
     }
 

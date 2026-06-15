@@ -107,7 +107,7 @@ class OnboardingActivity : Activity() {
 
         step3Check = stepRow(root,
             "③  生成你的身份码（X25519 公钥）",
-            "用于安全加好友。生成后到「我的身份码 / 共享密钥」让对方扫码，双方核对 6 位校验码就能开始端到端加密通信。\n\n⚠ 当前版本无前向保密 (PFS) — 私钥泄漏会让历史消息可被解密。",
+            "用于安全加好友。生成后到「我的身份码 / 共享密钥」让对方扫码，双方核对 8 位校验码就能开始端到端加密通信。\n\n⚠ 当前版本无前向保密 (PFS) — 私钥泄漏会让历史消息可被解密。",
             "现在生成"
         ) { ensureIdentityGenerated() }
         step3ActionLabel = { stepActionLabel ->

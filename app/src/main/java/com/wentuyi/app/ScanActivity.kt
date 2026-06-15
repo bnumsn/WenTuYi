@@ -187,7 +187,7 @@ class ScanActivity : Activity() {
                 append("校验码 (SAS)：$sas\n\n")
                 append("⚠ 这只是\"初步加好友\"。要确保不是中间人攻击：\n")
                 append("1) 让对方也扫你的身份码 (主页 → 我的身份码)\n")
-                append("2) 双方设备上看到的 6 位数字应一致\n")
+                append("2) 双方设备上看到的 8 位数字应一致\n")
                 append("3) 通过电话/当面比对（不要通过同一聊天 App）\n")
                 append("4) 比对一致后到「身份与密钥」点「标记已验证」\n\n")
                 append("未验证的联系人能发送，但 IME 会持续提醒。")

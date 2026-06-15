@@ -253,6 +253,12 @@ object SecurePayloadCodec {
         }
     }
 
+    // NOTE (legacy limitation): v2/v1 predate the AAD-bound header, so the `type` byte
+    // here is NOT authenticated — only the ciphertext is GCM-protected. An attacker can
+    // flip text↔image on an existing v2/v1 blob to cause type-confusion/DoS (it cannot
+    // forge or recover plaintext). This is unfixable without breaking already-emitted v2
+    // ciphertext; v3 closes it by binding version/type/key-mode/salt/IV into the AAD.
+    // These paths exist only for one-way migration of old messages.
     private fun decryptV2(payload: String, passphrase: String): DecryptedPayload {
         val packed = Base64.decode(payload.substring(PREFIX_V2.length), Base64.NO_WRAP)
         if (packed.size <= 2 + SALT_BYTES + IV_BYTES) throw GeneralSecurityException("加密内容不完整")

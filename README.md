@@ -20,7 +20,7 @@
 - 加密图传输：**Reed-Solomon 纠错的标准 QR Code**（ZXing, ECC 级 H），替换了旧版易被 JPEG 压缩破坏的自研 `WTYBW2` 黑白栅格；长 payload 由文图易自有的 `WTYP1|id|N|T|chunk` 文本包装拆分到多张 QR，接收方按序号重组。
 - 身份与密钥：
   - 主 App 可生成 X25519 身份码（公钥 + 名字打包成单张 QR），通过"扫码 / 导入二维码"添加联系人；
-  - 双方扫到对方身份码后会显示 6 位 **SAS 校验码**，建议口头核对一致以防中间人；
+  - 双方扫到对方身份码后会显示 8 位 **SAS 校验码**，建议口头核对一致以防中间人；
   - 联系人列表保存于 `WentuyiSettings`（私钥由 Android Keystore-resident AES-GCM 包裹）。
 - 旧"共享密钥"路径保留兼容；密钥读取失败时**硬失败**，不再回流明文。
 
@@ -78,7 +78,7 @@ platforms/
 
 整段 header 作为 GCM AAD，AES-256-GCM 输出包含 16 字节认证标签。
 
-X25519 公钥交换：双方扫描对方身份码后通过 ECDH 得到 32 字节 shared secret，再用 HKDF-SHA256（salt = 排序拼接的两公钥）派生会话密钥；该密钥直接以"模式 1"喂给同一份 `SecurePayloadCodec`。`KeyExchange.shortAuthString` 用 HKDF 派生出 6 位 SAS 供双方口头核对。
+X25519 公钥交换：双方扫描对方身份码后通过 ECDH 得到 32 字节 shared secret，再用 HKDF-SHA256（salt = 排序拼接的两公钥）派生会话密钥；该密钥直接以"模式 1"喂给同一份 `SecurePayloadCodec`。`KeyExchange.shortAuthString` 用 HKDF 派生出 8 位 SAS 供双方口头核对。
 
 ## 构建
 
@@ -151,7 +151,7 @@ adb shell ime set com.wentuyi.app/.TextImageImeService
 
 **安全性保证**：
 - 静态保护：AES-256-GCM AEAD + Argon2id (m=32 MiB, t=3, p=1)，header 作 GCM AAD 绑定 version/type/key-mode/salt/IV。
-- 身份认证：X25519 公钥指纹（SHA-256[..8] Base32）+ 6 位 HKDF SAS 供双方口外核对。
+- 身份认证：X25519 公钥指纹（SHA-256[..8] Base32）+ 8 位 HKDF SAS 供双方口外核对。
 - 端到端：会话密钥由双方公钥 ECDH 后 HKDF-SHA256 派生；不经任何服务器。
 
 **⚠ 重要：无前向保密 (Forward Secrecy / PFS)**
@@ -187,3 +187,15 @@ adb shell ime set com.wentuyi.app/.TextImageImeService
 9. **Onboarding 缺心智模型** — 末步弹"私钥丢失 = 永久失联 / 泄漏 = 被冒充"全屏强警告。
 10. **PFS 缺乏告知** — README、Onboarding、备份对话框三处明示"无前向保密"。
 11. **Argon2id m=32 MiB / t=3 偏弱** — 保留当前参数（OWASP 2023 下限），等 v0.6 引入 v4 envelope 时一并升级到 m=64 / t=4 并把参数写入 header。
+
+## v0.5.2 修复（Codex + Claude 联合评审）
+
+1. **联系人加密静默降级为共享密钥** — `resolveSendTarget` 在所选联系人消失或身份私钥不可读时会悄悄回落到共享密钥加密。现改为 **fail-closed**：返回 `SendTarget.Unavailable` 并拒绝发送，提示用户重新选择目标，绝不把"发给已验证联系人"降级成"人人可解"。
+2. **加密二维码走分享 fallback 时原明文残留输入框** — `SendController.deliverImages` 仅在 `commitContent` 成功路径清空原文；现在分享路径也会先清空匹配的明文，分享失败再恢复，杜绝误发明文。
+3. **目标漂移锚点加入 `fieldId`** — 在 `packageName + sessionId` 基础上追加 `EditorInfo.fieldId`（填 0 的 App 行为不变，填值的 App 多一道校验，只收紧不放松）。
+4. **图片 URI 授权过宽** — 去掉给"所有能处理分享 intent 的包"预授权的逻辑，改为只靠 intent 的 `FLAG_GRANT_READ_URI_PERMISSION`（+ 直达包的定向授权），缩小缓存 PNG 的可读面。
+5. **SAS 由 6 位升到 8 位** — MITM 伪造碰撞概率从 ~1e-6 降到 ~1e-8（app 与 shared-protocol 两份实现同步）。
+6. **shared-protocol 与 app 协议解析不一致** — shared 版现在同样解包/校验 `WTYIPG1` 分页与 `WTYICH1` 分片，并补齐对应编码器，跨平台行为统一（新增 round-trip 测试）。
+7. **身份备份码复制到剪贴板** — 复制后 60s 自动清除（仅当剪贴板内容仍是该备份码时），减少被剪贴板嗅探的窗口。
+8. **legacy WTY2/WTY1 type 字节未认证** — 属旧格式固有限制（无 AAD），无法在不破坏既有密文的前提下补认证；仅影响兼容解密路径（类型混淆/DoS，非伪造），已在代码注释中明确标注。v3 已通过 AAD 绑定彻底关闭。
+9. **无前向保密 (PFS)** — 设计限制，需 Double Ratchet，维持在 v0.6 路线图，本次未改动。

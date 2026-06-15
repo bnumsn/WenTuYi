@@ -48,7 +48,7 @@ object KeyExchange {
         val name: String,
         val publicKey: ByteArray,
         /**
-         * True only after the user has personally confirmed that the 6-digit SAS on
+         * True only after the user has personally confirmed that the 8-digit SAS on
          * their device matches what the peer reads from their own device. Defaults
          * to false at scan time — added contacts are "preliminary" until both sides
          * verify out-of-band. The IME marks unverified targets visually so users
@@ -167,8 +167,10 @@ object KeyExchange {
     }
 
     /**
-     * Derives a 6-digit Short Authentication String for out-of-band verification.
+     * Derives an 8-digit Short Authentication String for out-of-band verification.
      * Both peers must see the same number for the X25519 exchange to be trusted.
+     * 8 digits (~27 bits) makes a MITM's odds of forging a matching SAS ~1-in-10^8
+     * per exchange, two orders of magnitude better than the old 6-digit string.
      */
     fun shortAuthString(myIdentity: Identity, peerPublic: ByteArray): String {
         val ecdh = ecdh(myIdentity.privateKey, peerPublic)
@@ -186,7 +188,7 @@ object KeyExchange {
                 ((derived[1].toInt() and 0xFF) shl 16) or
                 ((derived[2].toInt() and 0xFF) shl 8) or
                 (derived[3].toInt() and 0xFF)
-            return (asInt % 1_000_000).toString().padStart(6, '0')
+            return (asInt % 100_000_000).toString().padStart(8, '0')
         } finally {
             CryptoUtils.wipe(ecdh)
         }

@@ -52,6 +52,26 @@ class SharedProtocolTest {
     }
 
     @Test
+    fun imagePageAndChunkEnvelopesRoundTripWithMetadata() {
+        val img = ByteArray(64) { it.toByte() }
+
+        val pagePayload = SecurePayloadCodec.encryptImagePageToPayload(img, 2, 5, "k")
+        val page = SecurePayloadCodec.decryptEnvelope(pagePayload, "k")
+        assertTrue(page.isImagePage())
+        assertEquals(2, page.pageNumber)
+        assertEquals(5, page.pageTotal)
+        assertContentEquals(img, page.data)
+
+        val chunkPayload = SecurePayloadCodec.encryptImageChunkToPayload(img, 1, 3, 999, "k")
+        val chunk = SecurePayloadCodec.decryptEnvelope(chunkPayload, "k")
+        assertTrue(chunk.isImageChunk())
+        assertEquals(1, chunk.pageNumber)   // chunk number reuses the pageNumber slot
+        assertEquals(3, chunk.pageTotal)
+        assertEquals(999, chunk.totalBytes)
+        assertContentEquals(img, chunk.data)
+    }
+
+    @Test
     fun payloadChunksAssembleOutOfOrderAndRejectTampering() {
         val payload = SecurePayloadCodec.PREFIX_V3 + "A".repeat(2_200)
         val chunks = PayloadChunks.chunkPayload(payload)
