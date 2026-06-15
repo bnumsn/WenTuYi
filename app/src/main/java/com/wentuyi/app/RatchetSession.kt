@@ -21,18 +21,27 @@ import java.nio.charset.StandardCharsets
  */
 object RatchetSession {
 
+    /**
+     * Serializes the whole load → encrypt/decrypt → save transaction. The IME launches each
+     * send on its own coroutine whose crypto runs on Dispatchers.Default, so two fast taps
+     * could otherwise both load the same persisted state and derive the same message key/IV
+     * (AES-GCM nonce reuse). A single lock is enough — sends/receives are human-paced, so
+     * contention is negligible; per-fingerprint locking would only add complexity.
+     */
+    private val lock = Any()
+
     /** WTY5 payload for [contact], or null if the ratchet has no sending chain yet. */
     fun encryptText(
         context: Context,
         identity: KeyExchange.Identity,
         contact: KeyExchange.Contact,
         text: String,
-    ): String? {
+    ): String? = synchronized(lock) {
         val state = loadOrBootstrapForSend(context, identity, contact) ?: return null
         if (state.cks == null) return null  // responder hasn't received the first message yet
         val payload = DoubleRatchet.encrypt(state, text.toByteArray(StandardCharsets.UTF_8))
         WentuyiSettings.saveRatchet(context, contact.fingerprint, DoubleRatchet.serialize(state))
-        return payload
+        payload
     }
 
     /**
@@ -44,11 +53,11 @@ object RatchetSession {
         identity: KeyExchange.Identity,
         contact: KeyExchange.Contact,
         payload: String,
-    ): ByteArray? {
+    ): ByteArray? = synchronized(lock) {
         val state = loadOrBootstrapForReceive(context, identity, contact) ?: return null
         // decrypt() is transactional: on failure [state] is untouched, so no defensive clone
         // is needed — a wrong-contact attempt just throws and we move on without persisting.
-        return try {
+        try {
             val plain = DoubleRatchet.decrypt(state, payload)
             WentuyiSettings.saveRatchet(context, contact.fingerprint, DoubleRatchet.serialize(state))
             plain
