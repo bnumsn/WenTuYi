@@ -284,6 +284,15 @@ class WentuyiSmokeTests {
         assertTrue("plain bitmap > 0", bm.width > 0 && bm.height > 0)
     }
 
+    @Test fun anti_ocr_image_renders_and_is_bounded() {
+        val bm = TextImageCodec.renderAntiOcrTextImage(SOURCE)
+        assertTrue("anti-ocr bitmap > 0", bm.width > 0 && bm.height > 0)
+        assertTrue("height capped", bm.height <= 8192)
+        // A huge paste must not blow up memory — height stays capped.
+        val huge = TextImageCodec.renderAntiOcrTextImage("超长\n".repeat(5000))
+        assertTrue("huge input height capped", huge.height <= 8192)
+    }
+
     @Test fun image_store_uri_readable_cross_process() {
         val qrs = TextImageCodec.renderEncryptedTextAsQr(SOURCE, PASSPHRASE)
         val uri = ImageStore.savePng(context, qrs[0])

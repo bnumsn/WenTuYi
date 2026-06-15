@@ -60,6 +60,11 @@ object TextImageCodec {
     private const val PLAIN_WIDTH = 1080
     private const val PLAIN_PADDING = 72
 
+    // ─── Anti-OCR plain image (readable to humans, noisy to machine OCR) ───────
+    private const val ANTIOCR_WIDTH = 1080
+    private const val ANTIOCR_PADDING = 64
+    private const val ANTIOCR_NOISE = 50
+
     private val random = SecureRandom()
 
     /** Renders a styled PNG showing [text]. Used by the IME "图" (plain image) action. */
@@ -78,6 +83,17 @@ object TextImageCodec {
             lineExtra = 18,
             bottomPadding = 56
         )
+
+    /**
+     * Renders [text] as a **plaintext** PNG that stays human-readable but is noisy and
+     * jittered to make machine OCR / automated scraping harder. This is NOT encryption —
+     * anyone can read it; use the WTY3 paths when you need confidentiality. Ported and
+     * hardened from the v1.0 prototype's AntiOcrRenderer (adds CJK wrapping + size cap).
+     */
+    fun renderAntiOcrTextImage(text: String): Bitmap {
+        require(text.isNotEmpty()) { "没有文字" }
+        return renderAntiOcr(text, ANTIOCR_NOISE)
+    }
 
     // ─── High-level: encrypt text/image bytes → list of QR bitmaps ────────────
 
@@ -469,6 +485,60 @@ object TextImageCodec {
         var y = textTop - metrics.ascent
         for (line in lines) {
             canvas.drawText(line, padding.toFloat(), y, textPaint)
+            y += lineHeight
+        }
+        return bitmap
+    }
+
+    /**
+     * Draws [text] with background noise dots, per-line micro-rotation and per-glyph
+     * vertical jitter + variable advance, so glyph edges/baselines won't line up for an
+     * OCR segmentation pass — while staying legible to a human. [noiseLevel] (0–100)
+     * scales dot count and jitter amplitude.
+     */
+    private fun renderAntiOcr(text: String, noiseLevel: Int): Bitmap {
+        val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.rgb(33, 33, 33)
+            textSize = 44f
+            isFakeBoldText = true
+        }
+        val contentWidth = ANTIOCR_WIDTH - ANTIOCR_PADDING * 2
+        val lines = wrapText(text, textPaint, contentWidth)
+        val metrics = textPaint.fontMetrics
+        val lineHeight = Math.round(metrics.descent - metrics.ascent + 22)
+        // Cap height like the encrypt path caps inputs — a hostile/huge paste can't blow up memory.
+        val rawHeight = Math.round(ANTIOCR_PADDING * 2 - metrics.ascent + lines.size * lineHeight)
+        val height = rawHeight.coerceIn(180, 8192)
+        val bitmap = Bitmap.createBitmap(ANTIOCR_WIDTH, height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        canvas.drawColor(Color.rgb(247, 247, 247))
+
+        if (noiseLevel > 0) {
+            val noisePaint = Paint(Paint.ANTI_ALIAS_FLAG)
+            repeat(noiseLevel * 50) {
+                noisePaint.color = Color.rgb(random.nextInt(256), random.nextInt(256), random.nextInt(256))
+                noisePaint.alpha = random.nextInt(50) + 30
+                canvas.drawCircle(
+                    random.nextInt(ANTIOCR_WIDTH).toFloat(),
+                    random.nextInt(height).toFloat(),
+                    random.nextInt(3).toFloat(),
+                    noisePaint
+                )
+            }
+        }
+
+        var y = ANTIOCR_PADDING * 2 - metrics.ascent
+        for (line in lines) {
+            var x = ANTIOCR_PADDING.toFloat()
+            canvas.save()
+            canvas.rotate((random.nextFloat() - 0.5f) * (noiseLevel / 100f) * 3f, x, y)
+            for (ch in line) {
+                val s = ch.toString()
+                val dy = (random.nextFloat() - 0.5f) * (noiseLevel / 100f) * 6f
+                canvas.drawText(s, x, y + dy, textPaint)
+                x += textPaint.measureText(s) + random.nextFloat() * 4f
+            }
+            canvas.restore()
             y += lineHeight
         }
         return bitmap

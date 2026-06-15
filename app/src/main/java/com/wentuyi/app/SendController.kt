@@ -83,17 +83,28 @@ class SendController(
         onStatus("已写入文字")
     }
 
-    fun generatePlainTextImage(text: String) {
+    fun generatePlainTextImage(text: String) = generateTextImage(text, antiOcr = false)
+
+    /** Plaintext PNG that's human-readable but noisy/jittered to defeat machine OCR. */
+    fun generateAntiOcrImage(text: String) = generateTextImage(text, antiOcr = true)
+
+    private fun generateTextImage(text: String, antiOcr: Boolean) {
         if (text.isEmpty()) { onStatus("没有文字"); return }
         val anchor = captureAnchor() ?: run { onStatus("当前输入框不可写"); return }
-        onStatus("正在生成图片...")
+        onStatus(if (antiOcr) "正在生成防 OCR 图片..." else "正在生成图片...")
         scope.launch {
             try {
                 val bitmap = withContext(Dispatchers.Default) {
-                    TextImageCodec.renderPlainTextImage(text)
+                    if (antiOcr) TextImageCodec.renderAntiOcrTextImage(text)
+                    else TextImageCodec.renderPlainTextImage(text)
                 }
                 val uri = withContext(Dispatchers.IO) { ImageStore.savePng(service, bitmap) }
-                deliverImages(listOf(uri), anchor, "已插入文字图片", "已分享文字图片", text)
+                deliverImages(
+                    listOf(uri), anchor,
+                    if (antiOcr) "已插入防 OCR 图片" else "已插入文字图片",
+                    if (antiOcr) "已分享防 OCR 图片" else "已分享文字图片",
+                    text,
+                )
             } catch (e: Exception) {
                 onStatus("生成失败：${e.userMessage()}")
             }
