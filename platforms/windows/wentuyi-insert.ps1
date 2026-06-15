@@ -108,10 +108,22 @@ function Get-WentuyiPassphrase {
     throw "Set WENTUYI_PASSPHRASE or create $PassphraseFile"
 }
 
-function Invoke-WentuyiCli([string[]] $ArgsList) {
-    $output = & $CliScript @ArgsList
-    if ($LASTEXITCODE -ne 0) { throw "desktop-cli failed: $($output -join "`n")" }
-    return ($output -join "`n").Trim()
+# Secret via env, text via stdin (--stdin) — keeps both off the child process command line.
+function Invoke-WentuyiCli([string[]] $ArgsList, [string] $Passphrase = $null, [string] $StdinText = $null) {
+    $prev = $env:WENTUYI_PASSPHRASE
+    try {
+        if ($Passphrase) { $env:WENTUYI_PASSPHRASE = $Passphrase }
+        if ($null -ne $StdinText) {
+            $output = $StdinText | & $CliScript (@($ArgsList) + "--stdin")
+        } else {
+            $output = & $CliScript @ArgsList
+        }
+        if ($LASTEXITCODE -ne 0) { throw "desktop-cli failed: $($output -join "`n")" }
+        return ($output -join "`n").Trim()
+    } finally {
+        if ($null -eq $prev) { Remove-Item Env:\WENTUYI_PASSPHRASE -ErrorAction SilentlyContinue }
+        else { $env:WENTUYI_PASSPHRASE = $prev }
+    }
 }
 
 if ($SelfTest) {
@@ -132,13 +144,13 @@ if ($Text) {
 
 $passphrase = Get-WentuyiPassphrase
 if ($EncryptText) {
-    $payload = Invoke-WentuyiCli @("encrypt-text", "--passphrase", $passphrase, $EncryptText)
+    $payload = Invoke-WentuyiCli @("encrypt-text") -Passphrase $passphrase -StdinText $EncryptText
     [WentuyiDirectInsertNative]::InsertText($TargetHwnd, $payload)
     return
 }
 
 if ($DecryptText) {
-    $plain = Invoke-WentuyiCli @("decrypt-text", "--passphrase", $passphrase, $DecryptText)
+    $plain = Invoke-WentuyiCli @("decrypt-text") -Passphrase $passphrase -StdinText $DecryptText
     [WentuyiDirectInsertNative]::InsertText($TargetHwnd, $plain)
     return
 }

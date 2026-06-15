@@ -22,32 +22,32 @@ private fun run(args: List<String>) {
     }
     when (args[0]) {
         "encrypt-text" -> {
-            val passphrase = option(args, "--passphrase")
-            val text = restAfterOptions(args.drop(1), setOf("--passphrase"))
+            val passphrase = resolvePassphrase(args)
+            val text = resolveText(args.drop(1), setOf("--passphrase"))
             println(SecurePayloadCodec.encryptTextToPayload(text, passphrase))
         }
         "decrypt-text" -> {
-            val passphrase = option(args, "--passphrase")
-            val payload = restAfterOptions(args.drop(1), setOf("--passphrase"))
+            val passphrase = resolvePassphrase(args)
+            val payload = resolveText(args.drop(1), setOf("--passphrase"))
             println(SecurePayloadCodec.decryptPayload(payload, passphrase))
         }
         "plain-image" -> {
             val out = Path.of(option(args, "--out"))
-            val text = restAfterOptions(args.drop(1), setOf("--out"))
+            val text = resolveText(args.drop(1), setOf("--out"))
             println(DesktopImageCodec.writePlainTextImage(text, out).toAbsolutePath())
         }
         "encrypted-qr" -> {
-            val passphrase = option(args, "--passphrase")
+            val passphrase = resolvePassphrase(args)
             val outDir = Path.of(option(args, "--out-dir"))
             val prefix = optionOrNull(args, "--prefix") ?: "wentuyi-qr"
-            val text = restAfterOptions(args.drop(1), setOf("--passphrase", "--out-dir", "--prefix"))
+            val text = resolveText(args.drop(1), setOf("--passphrase", "--out-dir", "--prefix"))
             val payload = SecurePayloadCodec.encryptTextToPayload(text, passphrase)
             DesktopImageCodec.writePayloadQrImages(payload, outDir, prefix).forEach { println(it.toAbsolutePath()) }
         }
         "payload-qr" -> {
             val outDir = Path.of(option(args, "--out-dir"))
             val prefix = optionOrNull(args, "--prefix") ?: "wentuyi-qr"
-            val payload = restAfterOptions(args.drop(1), setOf("--out-dir", "--prefix"))
+            val payload = resolveText(args.drop(1), setOf("--out-dir", "--prefix"))
             DesktopImageCodec.writePayloadQrImages(payload, outDir, prefix).forEach { println(it.toAbsolutePath()) }
         }
         "gen-identity" -> {
@@ -66,25 +66,25 @@ private fun run(args: List<String>) {
             println("fingerprint=${identity.fingerprint}")
         }
         "sas" -> {
-            val identity = KeyExchange.decodeBackup(option(args, "--backup"))
+            val identity = KeyExchange.decodeBackup(resolveBackup(args))
             val peer = peerPublic(args)
             println(KeyExchange.shortAuthString(identity, peer))
         }
         "session-encrypt" -> {
-            val identity = KeyExchange.decodeBackup(option(args, "--backup"))
+            val identity = KeyExchange.decodeBackup(resolveBackup(args))
             val secret = KeyExchange.deriveSharedSecret(identity, peerPublic(args))
             try {
-                val text = restAfterOptions(args.drop(1), setOf("--backup", "--peer-public", "--peer-qr"))
+                val text = resolveText(args.drop(1), setOf("--backup", "--peer-public", "--peer-qr"))
                 println(SecurePayloadCodec.encryptTextWithSessionKey(text, secret))
             } finally {
                 com.wentuyi.protocol.CryptoUtils.wipe(secret)
             }
         }
         "session-decrypt" -> {
-            val identity = KeyExchange.decodeBackup(option(args, "--backup"))
+            val identity = KeyExchange.decodeBackup(resolveBackup(args))
             val secret = KeyExchange.deriveSharedSecret(identity, peerPublic(args))
             try {
-                val payload = restAfterOptions(args.drop(1), setOf("--backup", "--peer-public", "--peer-qr"))
+                val payload = resolveText(args.drop(1), setOf("--backup", "--peer-public", "--peer-qr"))
                 println(SecurePayloadCodec.decryptEnvelopeWithSessionKey(payload, secret).text())
             } finally {
                 com.wentuyi.protocol.CryptoUtils.wipe(secret)
@@ -95,6 +95,30 @@ private fun run(args: List<String>) {
         else -> throw IllegalArgumentException("unknown command: ${args[0]}")
     }
 }
+
+// Secrets (shared passphrase, WTYB1 backup) are read from the environment by default so
+// they never appear in argv — process command lines are world-readable on Linux via
+// /proc/<pid>/cmdline and `ps -eww`, whereas /proc/<pid>/environ is restricted to the same
+// uid/root. The --passphrase / --backup flags remain as an explicit (less safe) fallback.
+private fun resolvePassphrase(args: List<String>): String =
+    System.getenv("WENTUYI_PASSPHRASE")?.takeIf { it.isNotEmpty() }
+        ?: option(args, "--passphrase")
+
+private fun resolveBackup(args: List<String>): String =
+    System.getenv("WENTUYI_BACKUP")?.takeIf { it.isNotEmpty() }
+        ?: option(args, "--backup")
+
+/**
+ * Text/payload from `--stdin` (read whole stdin, trimmed) when present, else the positional
+ * args. stdin keeps plaintext off the command line too — bridges pipe the message in.
+ */
+private fun resolveText(args: List<String>, optionNames: Set<String>): String =
+    if (args.contains("--stdin")) {
+        System.`in`.readBytes().toString(Charsets.UTF_8).trim()
+            .ifEmpty { throw IllegalArgumentException("empty stdin") }
+    } else {
+        restAfterOptions(args, optionNames)
+    }
 
 private fun option(args: List<String>, name: String): String =
     optionOrNull(args, name) ?: throw IllegalArgumentException("missing $name")
@@ -133,6 +157,11 @@ private fun printHelp() {
     println(
         """
         Wentuyi desktop protocol CLI
+
+        Secrets via env (preferred, keeps them out of argv / ps / /proc/cmdline):
+          WENTUYI_PASSPHRASE  shared key   (else --passphrase KEY)
+          WENTUYI_BACKUP      WTYB1 backup (else --backup WTYB1)
+        Text/payload via stdin: append --stdin and pipe the message in (else positional).
 
         Commands:
           encrypt-text --passphrase KEY TEXT

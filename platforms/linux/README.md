@@ -22,6 +22,8 @@ chmod 600 ~/.config/wentuyi/passphrase
 ibus restart
 ```
 
+密钥与明文不经子进程命令行：桥接把口令通过 `WENTUYI_PASSPHRASE` 环境变量传给 `desktop-cli`、明文经 stdin（`--stdin`），避免出现在 world-readable 的 `/proc/<pid>/cmdline` / `ps`。`--passphrase` 仅作显式回退。
+
 Add `Wentuyi` from the IBus input method preferences.
 
 ## IBus keys

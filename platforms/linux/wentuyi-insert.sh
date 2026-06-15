@@ -72,11 +72,12 @@ case "$MODE" in
         type_direct "$VALUE"
         ;;
     encrypt-text)
-        payload=$("$CLI" encrypt-text --passphrase "$(passphrase)" "$VALUE")
+        # Secret via env, text via stdin → neither appears in argv (/proc/<pid>/cmdline, ps).
+        payload=$(printf '%s' "$VALUE" | WENTUYI_PASSPHRASE="$(passphrase)" "$CLI" encrypt-text --stdin)
         type_direct "$payload"
         ;;
     decrypt-text)
-        plain=$("$CLI" decrypt-text --passphrase "$(passphrase)" "$VALUE")
+        plain=$(printf '%s' "$VALUE" | WENTUYI_PASSPHRASE="$(passphrase)" "$CLI" decrypt-text --stdin)
         type_direct "$plain"
         ;;
 esac
