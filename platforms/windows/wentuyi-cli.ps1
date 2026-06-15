@@ -4,6 +4,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# Collect any pipeline input up front so we can forward it to the child process' stdin
+# (PowerShell does NOT auto-forward a wrapper script's pipeline input to a native child).
+# This is what makes `--stdin` work for the bridges, keeping plaintext off the command line.
+$PipedInput = @($input)
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = Resolve-Path (Join-Path $ScriptDir "..\..")
 $RuntimeCandidates = @()
@@ -44,9 +48,17 @@ if ($Cli.EndsWith(".bat", [System.StringComparison]::OrdinalIgnoreCase)) {
     if ($env:JAVA_HOME -and (Test-Path (Join-Path $env:JAVA_HOME "bin\java.exe"))) {
         $JavaExe = Join-Path $env:JAVA_HOME "bin\java.exe"
     }
-    & $JavaExe -cp (Join-Path $AppHome "lib\*") com.wentuyi.cli.WentuyiCliKt @CliArgs
+    if ($PipedInput.Count -gt 0) {
+        $PipedInput | & $JavaExe -cp (Join-Path $AppHome "lib\*") com.wentuyi.cli.WentuyiCliKt @CliArgs
+    } else {
+        & $JavaExe -cp (Join-Path $AppHome "lib\*") com.wentuyi.cli.WentuyiCliKt @CliArgs
+    }
     exit $LASTEXITCODE
 }
 
-& $Cli @CliArgs
+if ($PipedInput.Count -gt 0) {
+    $PipedInput | & $Cli @CliArgs
+} else {
+    & $Cli @CliArgs
+}
 exit $LASTEXITCODE

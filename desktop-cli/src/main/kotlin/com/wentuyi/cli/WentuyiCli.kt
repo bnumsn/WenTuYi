@@ -60,7 +60,17 @@ private fun run(args: List<String>) {
             println("identityQr=${KeyExchange.encodeIdentityForQr(name, identity.publicKey)}")
         }
         "restore-backup" -> {
-            val identity = KeyExchange.decodeBackup(args.drop(1).joinToString(""))
+            // The WTYB1 backup IS the private key — keep it off argv: prefer WENTUYI_BACKUP
+            // env, then --stdin; positional remains as an explicit fallback.
+            val backup = System.getenv("WENTUYI_BACKUP")?.takeIf { it.isNotEmpty() }
+                ?: if (args.contains("--stdin")) {
+                    System.`in`.readBytes().toString(Charsets.UTF_8).trim()
+                        .ifEmpty { throw IllegalArgumentException("empty stdin") }
+                } else {
+                    args.drop(1).filterNot { it.startsWith("--") }.joinToString("")
+                        .ifEmpty { throw IllegalArgumentException("missing backup (WENTUYI_BACKUP / --stdin / WTYB1...)") }
+                }
+            val identity = KeyExchange.decodeBackup(backup)
             println("publicKey=${Encoding.b64Url(identity.publicKey)}")
             println("privateKey=${Encoding.b64Url(identity.privateKey)}")
             println("fingerprint=${identity.fingerprint}")
@@ -170,7 +180,7 @@ private fun printHelp() {
           encrypted-qr --passphrase KEY --out-dir DIR [--prefix NAME] TEXT
           payload-qr --out-dir DIR [--prefix NAME] WTY3_PAYLOAD
           gen-identity [--name NAME]
-          restore-backup WTYB1_BACKUP
+          restore-backup [WTYB1_BACKUP | --stdin]   (or WENTUYI_BACKUP env; backup = private key)
           sas --backup WTYB1_BACKUP (--peer-public B64URL | --peer-qr WTYID1_TEXT)
           session-encrypt --backup WTYB1_BACKUP (--peer-public B64URL | --peer-qr WTYID1_TEXT) TEXT
           session-decrypt --backup WTYB1_BACKUP (--peer-public B64URL | --peer-qr WTYID1_TEXT) WTY3_PAYLOAD
