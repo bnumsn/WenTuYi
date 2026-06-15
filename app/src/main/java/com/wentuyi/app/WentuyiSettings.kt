@@ -166,6 +166,20 @@ object WentuyiSettings {
     }
 
     /**
+     * Drops every per-contact ratchet session. Called when the local identity changes
+     * (replace / restore-to-a-different-identity): all WTY5 sessions were rooted in the old
+     * identity, so a "reset after compromise" must be a clean break, not silent reuse.
+     */
+    fun clearAllRatchets(context: Context) {
+        val prefs = prefs(context)
+        val editor = prefs.edit()
+        for (key in prefs.all.keys) {
+            if (key.startsWith("ratchet_")) editor.remove(key)
+        }
+        editor.apply()
+    }
+
+    /**
      * Subscribes [onChanged] to contact-list mutations (rename / delete / add). Used
      * by the IME so its [cachedContacts] doesn't go stale while the user is editing
      * contacts in [KeyManagementActivity] without switching input fields first.

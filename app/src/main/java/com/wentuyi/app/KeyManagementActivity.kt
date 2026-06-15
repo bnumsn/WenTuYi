@@ -249,7 +249,7 @@ class KeyManagementActivity : Activity() {
     private fun regenerateIdentity() {
         AlertDialog.Builder(this)
             .setTitle("重新生成身份？")
-            .setMessage("旧身份将立即作废，之前加你为联系人的对方需要重新扫码。此操作不可撤销。")
+            .setMessage("旧身份将立即作废：所有端到端加密会话(WTY5 棘轮)清空、联系人重置为未验证(需重新口外核对 SAS)，之前加你为联系人的对方需要重新扫码。此操作不可撤销。")
             .setPositiveButton("确认重置") { _, _ ->
                 scope.launch {
                     try {

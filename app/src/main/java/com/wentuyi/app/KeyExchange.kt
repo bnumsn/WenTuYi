@@ -80,7 +80,25 @@ object KeyExchange {
     fun replaceIdentity(context: Context): Identity {
         val identity = generateIdentity()
         WentuyiSettings.saveIdentity(context, identity.publicKey, identity.privateKey)
+        // New identity is always a clean break — drop all WTY5 sessions and require
+        // re-verification (the mutual SAS depends on this identity).
+        onIdentityChanged(context)
         return identity
+    }
+
+    /**
+     * Invalidates everything tied to the old local identity: clears all ratchet sessions
+     * (they were rooted in the old identity's ECDH) and marks every contact unverified
+     * (the mutual SAS changed, so prior out-of-band verification no longer holds).
+     */
+    private fun onIdentityChanged(context: Context) {
+        WentuyiSettings.clearAllRatchets(context)
+        val downgraded = listContacts(context).map { it.copy(verified = false) }
+        if (downgraded.any()) {
+            val arr = JSONArray()
+            for (c in downgraded) arr.put(c.toJson())
+            WentuyiSettings.setContactsJson(context, arr.toString())
+        }
     }
 
     fun loadIdentity(context: Context): Identity? =
@@ -274,8 +292,13 @@ object KeyExchange {
      */
     fun restoreIdentityFromBackup(context: Context, backup: String): Identity {
         val identity = decodeBackup(backup)
+        // Only a *change* of identity invalidates sessions — restoring the same identity
+        // (e.g. onto a new device) must keep working. Compare before overwriting.
+        val prevPub = runCatching { WentuyiSettings.loadIdentity(context)?.first }.getOrNull()
+        val identityChanged = prevPub == null || !prevPub.contentEquals(identity.publicKey)
         try {
             WentuyiSettings.saveIdentity(context, identity.publicKey, identity.privateKey)
+            if (identityChanged) onIdentityChanged(context)
             // The Identity instance we hand back keeps publicKey but not privateKey;
             // callers should reload from settings if they need it.
             return Identity(identity.publicKey, ByteArray(0))
