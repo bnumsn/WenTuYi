@@ -150,15 +150,15 @@ adb shell ime set com.wentuyi.app/.TextImageImeService
 ## 安全模型与已知限制
 
 **安全性保证**：
-- 静态保护：AES-256-GCM AEAD + Argon2id (m=32 MiB, t=3, p=1)，header 作 GCM AAD 绑定 version/type/key-mode/salt/IV。
+- 静态保护：AES-256-GCM AEAD + Argon2id（WTY4 默认 m=64 MiB / t=4 / p=1，参数写入 header 并 clamp），header 作 GCM AAD 绑定 version/type/key-mode/argon 参数/salt/IV。
 - 身份认证：X25519 公钥指纹（SHA-256[..8] Base32）+ 8 位 HKDF SAS 供双方口外核对。
 - 端到端：会话密钥由双方公钥 ECDH 后 HKDF-SHA256 派生；不经任何服务器。
+- **前向保密 (PFS)**：v0.6 起，发给**已验证联系人的加密文本**默认走 **WTY5 Double Ratchet**（Signal 式双棘轮）——私钥泄漏后已发出的历史消息无法被回溯解密，且具破后向恢复。
 
-**⚠ 重要：无前向保密 (Forward Secrecy / PFS)**
-- 当前 X25519 是长期身份密钥；同一对身份生成的会话密钥**对所有消息都相同**。
-- 含义：如果任何一方的私钥被攻破，**所有过往加密消息都可被回溯解密**。
-- 想要 PFS 必须实施 Double Ratchet（Signal 协议），列在 v0.6+ 路线图。
-- 在此之前：身份私钥的保护就是会话历史的保护。**务必抄写身份备份码并离线保管**。
+**⚠ PFS 的适用范围与限制**
+- **有 PFS**：已验证联系人的**加密文本**（WTY5 棘轮）。
+- **暂无 PFS**：① 旧「共享密钥」路径；② 联系人**加密二维码**路径（当前仍走 WTY4 会话密钥，棘轮化在下一小步）；③ 棘轮**首条消息**——接收方首次回复前，链含长期身份密钥成分，回复后完整生效（同 Signal 无 prekey 时）。
+- 棘轮会话状态以 Keystore 包裹存于本机；身份私钥仍是信任根，**务必抄写身份备份码并离线保管**。
 
 **其他已知限制**：
 - QR Code 解码已能容忍 JPEG q=80 的重压缩（smoke test 覆盖），但极低质量 (q≤40)、严重裁剪、二次摄屏仍可能失败 — 真机逐项验证微信/QQ/钉钉/飞书/Telegram/WhatsApp 的实际表现，并补充兼容性矩阵。
