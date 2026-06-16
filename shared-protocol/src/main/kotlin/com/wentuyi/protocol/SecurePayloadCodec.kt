@@ -281,12 +281,19 @@ object SecurePayloadCodec {
         if (packed.size <= 2 + SALT_BYTES + IV_BYTES) throw GeneralSecurityException("payload incomplete")
         if (packed[0].toInt() and 0xFF != 2) throw GeneralSecurityException("unsupported version")
         val type = packed[1].toInt() and 0xFF
+        if (type !in 1..4) throw GeneralSecurityException("unsupported type")
         val salt = Arrays.copyOfRange(packed, 2, 2 + SALT_BYTES)
         val iv = Arrays.copyOfRange(packed, 2 + SALT_BYTES, 2 + SALT_BYTES + IV_BYTES)
         val ciphertext = Arrays.copyOfRange(packed, 2 + SALT_BYTES + IV_BYTES, packed.size)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.DECRYPT_MODE, pbkdf2(passphrase, salt), GCMParameterSpec(GCM_TAG_BITS, iv))
-        return DecryptedPayload(type, cipher.doFinal(ciphertext))
+        val plain = cipher.doFinal(ciphertext)
+        // Parity with v3/v4: unpack legacy image page/chunk metadata too (the app codec did).
+        return when (type) {
+            TYPE_IMAGE_PAGE -> unpackImagePage(plain)
+            TYPE_IMAGE_CHUNK -> unpackImageChunk(plain)
+            else -> DecryptedPayload(type, plain)
+        }
     }
 
     private fun decryptV1Text(payload: String, passphrase: String): String {
