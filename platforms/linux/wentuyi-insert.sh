@@ -13,7 +13,8 @@ usage() {
 Usage: wentuyi-insert.sh (--text TEXT | --encrypt-text TEXT | --decrypt-text PAYLOAD | --self-test)
 
 Types the result directly into the focused X11 input target with xdotool.
-No clipboard is used.
+No clipboard is used. Pass "-" as the value to read it from stdin (keeps sensitive
+text off this process' command line):  printf '%s' "$msg" | wentuyi-insert.sh --encrypt-text -
 USAGE
 }
 
@@ -43,6 +44,12 @@ while [ $# -gt 0 ]; do
 done
 
 [ -n "$MODE" ] || { usage; exit 2; }
+
+# A VALUE of "-" reads the text/payload from stdin, so sensitive content never appears in
+# this wrapper's own argv (/proc/<pid>/cmdline, ps). Recommended for encrypt/decrypt.
+if [ "$VALUE" = "-" ]; then
+    VALUE="$(cat)"
+fi
 
 if [ "$MODE" = "self-test" ]; then
     command -v xdotool >/dev/null

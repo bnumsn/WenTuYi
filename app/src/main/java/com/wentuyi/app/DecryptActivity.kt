@@ -1,5 +1,7 @@
 package com.wentuyi.app
 
+import com.wentuyi.protocol.SecurePayloadCodec
+
 import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager

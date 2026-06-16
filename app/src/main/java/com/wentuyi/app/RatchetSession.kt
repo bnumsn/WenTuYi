@@ -68,7 +68,7 @@ object RatchetSession {
 
     private fun loadOrBootstrapForSend(
         context: Context, identity: KeyExchange.Identity, contact: KeyExchange.Contact,
-    ): DoubleRatchet.State? {
+    ): RatchetState? {
         WentuyiSettings.loadRatchet(context, contact.fingerprint)
             ?.let { return DoubleRatchet.deserialize(it) }
         // No state yet: only the initiator can open a session.
@@ -80,7 +80,7 @@ object RatchetSession {
 
     private fun loadOrBootstrapForReceive(
         context: Context, identity: KeyExchange.Identity, contact: KeyExchange.Contact,
-    ): DoubleRatchet.State? {
+    ): RatchetState? {
         WentuyiSettings.loadRatchet(context, contact.fingerprint)
             ?.let { return DoubleRatchet.deserialize(it) }
         // No state yet: only the responder bootstraps on receive (initial ratchet key =

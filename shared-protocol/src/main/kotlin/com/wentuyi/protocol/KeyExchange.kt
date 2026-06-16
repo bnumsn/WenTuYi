@@ -49,11 +49,11 @@ object KeyExchange {
         try {
             agreement.calculateAgreement(X25519PublicKeyParameters(peerPublic, 0), out, 0)
         } catch (e: IllegalStateException) {
-            throw IllegalArgumentException("unsafe low-order public key", e)
+            throw ProtocolException(ProtocolError.LOW_ORDER_KEY, "unsafe low-order public key", e)
         }
         var accumulator = 0
         for (b in out) accumulator = accumulator or (b.toInt() and 0xFF)
-        if (accumulator == 0) throw IllegalArgumentException("unsafe low-order public key")
+        if (accumulator == 0) throw ProtocolException(ProtocolError.LOW_ORDER_KEY, "unsafe low-order public key")
         return out
     }
 
@@ -99,11 +99,18 @@ object KeyExchange {
 
     fun decodeIdentityFromQr(text: String): Pair<String, ByteArray> {
         val trimmed = text.trim()
-        require(trimmed.startsWith("$QR_PREFIX|")) { "not a Wentuyi identity QR" }
+        if (!trimmed.startsWith("$QR_PREFIX|"))
+            throw ProtocolException(ProtocolError.NOT_AN_IDENTITY_QR, "not a Wentuyi identity QR")
         val parts = trimmed.split("|", limit = 3)
-        require(parts.size == 3) { "identity QR incomplete" }
-        val key = Encoding.b64UrlDecode(parts[2])
-        require(key.size == 32) { "identity public key must be 32 bytes" }
+        if (parts.size != 3)
+            throw ProtocolException(ProtocolError.IDENTITY_QR_INCOMPLETE, "identity QR incomplete")
+        val key = try {
+            Encoding.b64UrlDecode(parts[2])
+        } catch (e: IllegalArgumentException) {
+            throw ProtocolException(ProtocolError.IDENTITY_QR_CORRUPT, "identity QR corrupt", e)
+        }
+        if (key.size != 32)
+            throw ProtocolException(ProtocolError.IDENTITY_KEY_LENGTH, "identity public key must be 32 bytes")
         return parts[1] to key
     }
 
@@ -122,12 +129,17 @@ object KeyExchange {
     fun decodeBackup(text: String): Identity {
         val cleaned = text.trim().uppercase()
             .replace(Regex("[\\s\\u00A0\\u200B-\\u200D\\uFEFF\\-]"), "")
-        require(cleaned.startsWith(BACKUP_PREFIX)) { "not a Wentuyi identity backup" }
-        val bytes = Encoding.Base32.decode(cleaned.substring(BACKUP_PREFIX.length))
+        if (!cleaned.startsWith(BACKUP_PREFIX))
+            throw ProtocolException(ProtocolError.NOT_A_BACKUP, "not a Wentuyi identity backup")
+        val bytes = try {
+            Encoding.Base32.decode(cleaned.substring(BACKUP_PREFIX.length))
+        } catch (e: Exception) {
+            throw ProtocolException(ProtocolError.BACKUP_CORRUPT, "backup content corrupt", e)
+        }
         return when (bytes.size) {
             68 -> decodeBackupV05(bytes)
             64 -> decodeBackupV04(bytes)
-            else -> throw IllegalArgumentException("backup length invalid (${bytes.size} bytes)")
+            else -> throw ProtocolException(ProtocolError.BACKUP_LENGTH, "backup length invalid (${bytes.size} bytes)")
         }
     }
 
@@ -139,9 +151,11 @@ object KeyExchange {
             ((bytes[66].toInt() and 0xFF) shl 8) or
             (bytes[67].toInt() and 0xFF)
         val actualCrc = CRC32().apply { update(bytes, 0, 64) }.value.toInt()
-        require(storedCrc == actualCrc) { "backup CRC mismatch" }
+        if (storedCrc != actualCrc)
+            throw ProtocolException(ProtocolError.BACKUP_CRC_MISMATCH, "backup CRC mismatch")
         val derivedPub = X25519PrivateKeyParameters(priv, 0).generatePublicKey().encoded
-        require(derivedPub.contentEquals(pub)) { "backup public/private key mismatch" }
+        if (!derivedPub.contentEquals(pub))
+            throw ProtocolException(ProtocolError.BACKUP_KEY_MISMATCH, "backup public/private key mismatch")
         return Identity(pub, priv)
     }
 
@@ -149,7 +163,8 @@ object KeyExchange {
         val pub = bytes.copyOfRange(0, 32)
         val priv = bytes.copyOfRange(32, 64)
         val derivedPub = X25519PrivateKeyParameters(priv, 0).generatePublicKey().encoded
-        require(derivedPub.contentEquals(pub)) { "backup public/private key mismatch" }
+        if (!derivedPub.contentEquals(pub))
+            throw ProtocolException(ProtocolError.BACKUP_KEY_MISMATCH, "backup public/private key mismatch")
         return Identity(pub, priv)
     }
 

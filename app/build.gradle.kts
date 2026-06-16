@@ -20,6 +20,14 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    // Ship the repo-level canonical vectors inside the test APK so VectorContractTest can
+    // decode them with the app's own codec copy. Single source of truth with :shared-protocol.
+    sourceSets {
+        getByName("androidTest") {
+            assets.srcDir(rootProject.file("protocol-fixtures"))
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -65,6 +73,11 @@ android {
 dependencies {
     implementation("org.jetbrains.kotlin:kotlin-stdlib:1.9.24")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+
+    // Portable JVM protocol core (P0.2 migration target). Pure JDK + BouncyCastle, no Android
+    // APIs and no java.util.Base64 floor — safe at minSdk 23. The app's own duplicate codec is
+    // still present; it is being deleted incrementally as call sites move onto this module.
+    implementation(project(":shared-protocol"))
 
     // QR Code encoding/decoding — pure Java, no AndroidX.
     implementation("com.google.zxing:core:3.5.3")

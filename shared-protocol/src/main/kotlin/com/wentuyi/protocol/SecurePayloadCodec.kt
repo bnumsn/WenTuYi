@@ -61,6 +61,21 @@ object SecurePayloadCodec {
     fun encryptTextWithSessionKey(plainText: String, sessionKey: ByteArray): String =
         encryptBytes(TYPE_TEXT, plainText.toByteArray(StandardCharsets.UTF_8), sessionKey = sessionKey)
 
+    /** Encrypt a whole image (single payload) under a passphrase. */
+    fun encryptImageToPayload(imageBytes: ByteArray, passphrase: String): String {
+        require(imageBytes.isNotEmpty()) { "image is empty" }
+        return encryptBytes(TYPE_IMAGE, imageBytes, passphrase = passphrase)
+    }
+
+    /** Encrypt a whole image (single payload) under a 32-byte X25519 session key. */
+    fun encryptImageWithSessionKey(imageBytes: ByteArray, sessionKey: ByteArray): String {
+        require(imageBytes.isNotEmpty()) { "image is empty" }
+        return encryptBytes(TYPE_IMAGE, imageBytes, sessionKey = sessionKey)
+    }
+
+    /** Wrap already-decrypted plaintext bytes as a text [DecryptedPayload] (no crypto). */
+    fun textPayload(data: ByteArray): DecryptedPayload = DecryptedPayload(TYPE_TEXT, data)
+
     /** Encrypt one page of a multi-page encrypted image (parity with the Android app). */
     fun encryptImagePageToPayload(imageBytes: ByteArray, pageNumber: Int, pageTotal: Int, passphrase: String): String {
         require(imageBytes.isNotEmpty()) { "image is empty" }

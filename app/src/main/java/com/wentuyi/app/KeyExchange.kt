@@ -1,14 +1,14 @@
 package com.wentuyi.app
 
+import com.wentuyi.protocol.CryptoUtils
+import com.wentuyi.protocol.Encoding
+import com.wentuyi.protocol.ProtocolError
+import com.wentuyi.protocol.ProtocolException
+import com.wentuyi.protocol.SecurePayloadCodec
+import com.wentuyi.protocol.KeyExchange as ProtoKE
+
 import android.content.Context
 import android.util.Base64
-import org.bouncycastle.crypto.agreement.X25519Agreement
-import org.bouncycastle.crypto.generators.X25519KeyPairGenerator
-import org.bouncycastle.crypto.params.X25519KeyGenerationParameters
-import org.bouncycastle.crypto.params.X25519PrivateKeyParameters
-import org.bouncycastle.crypto.params.X25519PublicKeyParameters
-import java.nio.charset.StandardCharsets
-import java.security.SecureRandom
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -31,13 +31,35 @@ import org.json.JSONObject
  */
 object KeyExchange {
     const val QR_PREFIX = "WTYID1"
-    private const val SHARED_SECRET_LEN = 32
-    private val random = SecureRandom()
-    private val HKDF_INFO_SAS = "WTY-SAS-v1".toByteArray(StandardCharsets.US_ASCII)
-    private val HKDF_INFO_SESSION = "WTY-session-v1".toByteArray(StandardCharsets.US_ASCII)
+
+    // The X25519 / SAS / backup / QR crypto now lives once in :shared-protocol; the methods
+    // below delegate to it. This object keeps only the Android-specific surface — Identity /
+    // Contact value types, Keystore-backed identity persistence, and the SharedPreferences
+    // contact store — plus a thin layer that re-localizes protocol errors back to Chinese.
+    private fun Identity.toProto() = ProtoKE.Identity(publicKey, privateKey)
+
+    private fun localizedMessage(code: ProtocolError): String = when (code) {
+        ProtocolError.LOW_ORDER_KEY -> "不安全的公钥（低阶点）"
+        ProtocolError.NOT_A_BACKUP -> "不是文图易身份备份码"
+        ProtocolError.BACKUP_CORRUPT -> "备份码内容损坏"
+        ProtocolError.BACKUP_LENGTH -> "备份码长度异常"
+        ProtocolError.BACKUP_CRC_MISMATCH -> "备份码校验失败：CRC32 不匹配，请检查是否有字符抄错"
+        ProtocolError.BACKUP_KEY_MISMATCH -> "备份码校验失败：公钥与私钥不一致"
+        ProtocolError.NOT_AN_IDENTITY_QR -> "不是文图易身份码"
+        ProtocolError.IDENTITY_QR_INCOMPLETE -> "身份码格式不完整"
+        ProtocolError.IDENTITY_QR_CORRUPT -> "身份码内容损坏"
+        ProtocolError.IDENTITY_KEY_LENGTH -> "身份码公钥长度异常"
+    }
+
+    private fun <T> localized(block: () -> T): T =
+        try {
+            block()
+        } catch (e: ProtocolException) {
+            throw IllegalArgumentException(localizedMessage(e.code), e)
+        }
 
     data class Identity(val publicKey: ByteArray, val privateKey: ByteArray) {
-        val fingerprint: String get() = CryptoUtils.Base32.encode(CryptoUtils.sha256(publicKey).copyOf(8))
+        val fingerprint: String get() = Encoding.Base32.encode(CryptoUtils.sha256(publicKey).copyOf(8))
 
         override fun equals(other: Any?): Boolean =
             other is Identity && publicKey.contentEquals(other.publicKey)
@@ -56,7 +78,7 @@ object KeyExchange {
          */
         val verified: Boolean = false,
     ) {
-        val fingerprint: String get() = CryptoUtils.Base32.encode(CryptoUtils.sha256(publicKey).copyOf(8))
+        val fingerprint: String get() = Encoding.Base32.encode(CryptoUtils.sha256(publicKey).copyOf(8))
 
         // Equality is by publicKey only (name/verified state can drift independently).
         override fun equals(other: Any?): Boolean =
@@ -127,165 +149,44 @@ object KeyExchange {
     }
 
     /** Generates a fresh X25519 keypair — used for identities and for ratchet keys. */
-    internal fun generateIdentity(): Identity {
-        val gen = X25519KeyPairGenerator()
-        gen.init(X25519KeyGenerationParameters(random))
-        val pair = gen.generateKeyPair()
-        val priv = (pair.private as X25519PrivateKeyParameters).encoded
-        val pub = (pair.public as X25519PublicKeyParameters).encoded
-        return Identity(pub, priv)
-    }
+    internal fun generateIdentity(): Identity = ProtoKE.generateIdentity().let { Identity(it.publicKey, it.privateKey) }
 
     // ─── ECDH + session key ───────────────────────────────────────────────────
 
     /**
-     * Computes the 32-byte X25519 shared secret. Identical on both peers.
-     *
-     * Rejects all-zero output (RFC 7748 §6.1) — that's what you get when the peer
-     * sends a low-order public key, and using such a "secret" would let the attacker
-     * predict the session key and decrypt every message.
+     * Computes the 32-byte X25519 shared secret. Identical on both peers. Rejects low-order
+     * public keys (all-zero ECDH output, RFC 7748 §6.1) — delegated to :shared-protocol.
      */
-    fun ecdh(myPrivate: ByteArray, peerPublic: ByteArray): ByteArray {
-        val agreement = X25519Agreement()
-        agreement.init(X25519PrivateKeyParameters(myPrivate, 0))
-        val out = ByteArray(agreement.agreementSize)
-        try {
-            agreement.calculateAgreement(X25519PublicKeyParameters(peerPublic, 0), out, 0)
-        } catch (bcRejection: IllegalStateException) {
-            // BC ≥ 1.71 raises this when the shared-secret output would be all-zero.
-            // Re-surface as our canonical low-order-pubkey rejection.
-            throw IllegalArgumentException("不安全的公钥（低阶点）", bcRejection)
-        }
-        // Defensive double-check for older BC behaviour or future regressions:
-        // OR-fold all bytes; zero only if every byte is zero.
-        var accumulator = 0
-        for (b in out) accumulator = accumulator or (b.toInt() and 0xFF)
-        if (accumulator == 0) {
-            throw IllegalArgumentException("不安全的公钥（低阶点）")
-        }
-        return out
-    }
+    fun ecdh(myPrivate: ByteArray, peerPublic: ByteArray): ByteArray =
+        localized { ProtoKE.ecdh(myPrivate, peerPublic) }
 
     /**
      * Derives a deterministic 32-byte session key for [SecurePayloadCodec]
      * (KEY_MODE_SESSION_KEY). Public keys are sorted lexicographically so both peers
      * derive identical bytes regardless of who's initiating.
      */
-    fun deriveSharedSecret(myIdentity: Identity, peerPublic: ByteArray): ByteArray {
-        val ecdh = ecdh(myIdentity.privateKey, peerPublic)
-        try {
-            val (low, high) =
-                if (compareBytes(myIdentity.publicKey, peerPublic) <= 0)
-                    myIdentity.publicKey to peerPublic
-                else peerPublic to myIdentity.publicKey
-            val salt = ByteArray(low.size + high.size).apply {
-                System.arraycopy(low, 0, this, 0, low.size)
-                System.arraycopy(high, 0, this, low.size, high.size)
-            }
-            return CryptoUtils.hkdfSha256(ecdh, salt, HKDF_INFO_SESSION, SHARED_SECRET_LEN)
-        } finally {
-            // Wipe the ECDH intermediate so it doesn't outlive its purpose on the heap.
-            CryptoUtils.wipe(ecdh)
-        }
-    }
+    fun deriveSharedSecret(myIdentity: Identity, peerPublic: ByteArray): ByteArray =
+        localized { ProtoKE.deriveSharedSecret(myIdentity.toProto(), peerPublic) }
 
     /**
      * Derives an 8-digit Short Authentication String for out-of-band verification.
      * Both peers must see the same number for the X25519 exchange to be trusted.
-     * 8 digits (~27 bits) makes a MITM's odds of forging a matching SAS ~1-in-10^8
-     * per exchange, two orders of magnitude better than the old 6-digit string.
      */
-    fun shortAuthString(myIdentity: Identity, peerPublic: ByteArray): String {
-        val ecdh = ecdh(myIdentity.privateKey, peerPublic)
-        try {
-            val (low, high) =
-                if (compareBytes(myIdentity.publicKey, peerPublic) <= 0)
-                    myIdentity.publicKey to peerPublic
-                else peerPublic to myIdentity.publicKey
-            val salt = ByteArray(low.size + high.size).apply {
-                System.arraycopy(low, 0, this, 0, low.size)
-                System.arraycopy(high, 0, this, low.size, high.size)
-            }
-            val derived = CryptoUtils.hkdfSha256(ecdh, salt, HKDF_INFO_SAS, 4)
-            val asInt = ((derived[0].toInt() and 0x7F) shl 24) or
-                ((derived[1].toInt() and 0xFF) shl 16) or
-                ((derived[2].toInt() and 0xFF) shl 8) or
-                (derived[3].toInt() and 0xFF)
-            return (asInt % 100_000_000).toString().padStart(8, '0')
-        } finally {
-            CryptoUtils.wipe(ecdh)
-        }
-    }
+    fun shortAuthString(myIdentity: Identity, peerPublic: ByteArray): String =
+        localized { ProtoKE.shortAuthString(myIdentity.toProto(), peerPublic) }
 
     // ─── Identity backup (Base32 string the user can write down) ──────────────
 
-    private const val BACKUP_PREFIX = "WTYB1"
-
     /**
-     * Encodes the local identity (publicKey 32B + privateKey 32B + CRC32 4B = 68B)
-     * as a grouped Base32 string the user can copy onto paper or a password manager.
-     * Format: `WTYB1-XXXX-XXXX-…-XXXX` (Base32-encoded, dash-separated 5-char groups).
-     *
-     * v0.5 added the trailing CRC32; v0.4 backups (64 bytes) are still accepted by
-     * [decodeBackup] for migration.
+     * Encodes the local identity as a grouped Base32 string (`WTYB1-XXXX-…`) for paper / a
+     * password manager. v0.5 format with trailing CRC32; v0.4 (64-byte) backups still decode.
+     * Crypto + format delegated to :shared-protocol.
      */
-    fun encodeBackup(identity: Identity): String {
-        val packed = ByteArray(32 + 32 + 4)
-        System.arraycopy(identity.publicKey, 0, packed, 0, 32)
-        System.arraycopy(identity.privateKey, 0, packed, 32, 32)
-        val crc = java.util.zip.CRC32().apply { update(packed, 0, 64) }.value.toInt()
-        packed[64] = (crc ushr 24).toByte()
-        packed[65] = (crc ushr 16).toByte()
-        packed[66] = (crc ushr 8).toByte()
-        packed[67] = (crc and 0xFF).toByte()
-        val raw = CryptoUtils.Base32.encode(packed)
-        val groups = raw.chunked(5)
-        return BACKUP_PREFIX + "-" + groups.joinToString("-")
-    }
+    fun encodeBackup(identity: Identity): String = ProtoKE.encodeBackup(identity.toProto())
 
-    /**
-     * Inverse of [encodeBackup]. Strips whitespace incl. NBSP / zero-width chars that
-     * sneak in when users paste from PDFs or chat apps. Verifies CRC32 (v0.5+) and
-     * derives the public key from the private to catch single-char typos.
-     */
-    fun decodeBackup(text: String): Identity {
-        // Strip NBSP, zero-width chars and BOM that can sneak in from PDFs or chat apps.
-        // Also strip dashes the grouping format adds.
-        val cleaned = text.trim().uppercase()
-            .replace(Regex("[\\s\\u00A0\\u200B-\\u200D\\uFEFF\\-]"), "")
-        require(cleaned.startsWith(BACKUP_PREFIX)) { "不是文图易身份备份码" }
-        val body = cleaned.substring(BACKUP_PREFIX.length)
-        val bytes = try { CryptoUtils.Base32.decode(body) }
-                    catch (e: Exception) { throw IllegalArgumentException("备份码内容损坏") }
-        return when (bytes.size) {
-            68 -> decodeBackupV05(bytes)
-            64 -> decodeBackupV04(bytes)
-            else -> throw IllegalArgumentException("备份码长度异常 (${bytes.size} 字节)")
-        }
-    }
-
-    private fun decodeBackupV05(bytes: ByteArray): Identity {
-        val pub = bytes.copyOfRange(0, 32)
-        val priv = bytes.copyOfRange(32, 64)
-        val storedCrc = ((bytes[64].toInt() and 0xFF) shl 24) or
-            ((bytes[65].toInt() and 0xFF) shl 16) or
-            ((bytes[66].toInt() and 0xFF) shl 8) or
-            (bytes[67].toInt() and 0xFF)
-        val actualCrc = java.util.zip.CRC32().apply { update(bytes, 0, 64) }.value.toInt()
-        require(actualCrc == storedCrc) { "备份码校验失败：CRC32 不匹配，请检查是否有字符抄错" }
-        val derivedPub = X25519PrivateKeyParameters(priv, 0).generatePublicKey().encoded
-        require(derivedPub.contentEquals(pub)) { "备份码校验失败：公钥与私钥不一致" }
-        return Identity(pub, priv)
-    }
-
-    private fun decodeBackupV04(bytes: ByteArray): Identity {
-        // v0.4 had no CRC; only the pub-derived-from-priv check exists.
-        val pub = bytes.copyOfRange(0, 32)
-        val priv = bytes.copyOfRange(32, 64)
-        val derivedPub = X25519PrivateKeyParameters(priv, 0).generatePublicKey().encoded
-        require(derivedPub.contentEquals(pub)) { "备份码校验失败：公钥与私钥不一致" }
-        return Identity(pub, priv)
-    }
+    /** Inverse of [encodeBackup]; localizes protocol failures back to Chinese for the UI. */
+    fun decodeBackup(text: String): Identity =
+        localized { ProtoKE.decodeBackup(text).let { Identity(it.publicKey, it.privateKey) } }
 
     /**
      * Restores the identity from a backup string and persists it to settings.
@@ -313,27 +214,12 @@ object KeyExchange {
 
     // ─── QR transport for the public key ──────────────────────────────────────
 
-    fun encodeIdentityForQr(name: String, publicKey: ByteArray): String {
-        val safeName = name.trim().take(40).replace('|', '/').ifEmpty { "未命名" }
-        val b64 = Base64.encodeToString(publicKey, Base64.NO_WRAP or Base64.URL_SAFE)
-        return "$QR_PREFIX|$safeName|$b64"
-    }
+    fun encodeIdentityForQr(name: String, publicKey: ByteArray): String =
+        ProtoKE.encodeIdentityForQr(name, publicKey)
 
-    /** Returns `(name, publicKey)` or throws if [text] is not a valid identity QR. */
-    fun decodeIdentityFromQr(text: String): Pair<String, ByteArray> {
-        val trimmed = text.trim()
-        require(trimmed.startsWith("$QR_PREFIX|")) { "不是文图易身份码" }
-        val parts = trimmed.split("|", limit = 3)
-        require(parts.size == 3) { "身份码格式不完整" }
-        val name = parts[1]
-        val key = try {
-            Base64.decode(parts[2], Base64.NO_WRAP or Base64.URL_SAFE)
-        } catch (e: IllegalArgumentException) {
-            throw IllegalArgumentException("身份码内容损坏")
-        }
-        require(key.size == 32) { "身份码公钥长度异常" }
-        return name to key
-    }
+    /** Returns `(name, publicKey)` or throws (localized) if [text] is not a valid identity QR. */
+    fun decodeIdentityFromQr(text: String): Pair<String, ByteArray> =
+        localized { ProtoKE.decodeIdentityFromQr(text) }
 
     // ─── Contact storage (JSON in SharedPreferences) ──────────────────────────
 
@@ -422,14 +308,5 @@ object KeyExchange {
             WentuyiSettings.setContactsJson(context, arr.toString())
         }
         return current.size - valid.size
-    }
-
-    private fun compareBytes(a: ByteArray, b: ByteArray): Int {
-        val len = minOf(a.size, b.size)
-        for (i in 0 until len) {
-            val cmp = (a[i].toInt() and 0xFF).compareTo(b[i].toInt() and 0xFF)
-            if (cmp != 0) return cmp
-        }
-        return a.size.compareTo(b.size)
     }
 }
