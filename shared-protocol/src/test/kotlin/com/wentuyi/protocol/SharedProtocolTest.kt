@@ -182,6 +182,27 @@ class SharedProtocolTest {
     }
 
     @Test
+    fun imageConvenienceMethodsRoundTrip() {
+        val image = ByteArray(40) { (it * 7).toByte() }
+        val pp = SecurePayloadCodec.decryptEnvelope(
+            SecurePayloadCodec.encryptImageToPayload(image, "pw"), "pw",
+        )
+        assertEquals(SecurePayloadCodec.TYPE_IMAGE, pp.type)
+        assertContentEquals(image, pp.data)
+
+        val sessionKey = ByteArray(32) { it.toByte() }
+        val sp = SecurePayloadCodec.decryptEnvelopeWithSessionKey(
+            SecurePayloadCodec.encryptImageWithSessionKey(image, sessionKey), sessionKey,
+        )
+        assertEquals(SecurePayloadCodec.TYPE_IMAGE, sp.type)
+        assertContentEquals(image, sp.data)
+
+        val wrapped = SecurePayloadCodec.textPayload("hi".toByteArray())
+        assertEquals(SecurePayloadCodec.TYPE_TEXT, wrapped.type)
+        assertEquals("hi", wrapped.text())
+    }
+
+    @Test
     fun payloadChunksAssembleOutOfOrderAndRejectTampering() {
         val payload = SecurePayloadCodec.PREFIX_V3 + "A".repeat(2_200)
         val chunks = PayloadChunks.chunkPayload(payload)

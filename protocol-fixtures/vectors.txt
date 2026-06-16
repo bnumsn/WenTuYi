@@ -1,0 +1,11 @@
+# Canonical Wentuyi protocol decrypt vectors — DO NOT hand-edit payloads.
+# Regenerate: ./gradlew :desktop-cli:generateFixtures  (then re-run both test suites)
+# Columns: vec|name|prefix|keyMode|type|headerLen|page|total|totalBytes|bodyBase64|payload
+meta|Y29ycmVjdCBob3JzZSBiYXR0ZXJ5IHN0YXBsZSDmloflm77mmJM=|000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+vec|v4-passphrase-text|WTY4:|passphrase|1|37|0|0|0|aGVsbG8g5paH5Zu+5piTIOKAlCBwYXNzcGhyYXNl|WTY4:BAEAAAEAAAQBIZjpeGZZNCWXIRoAC9bNqjX0hVa5NVCu8vgQ0Cxc4e9CoLEd2Kh1RC9dffONaQWJqOWA5aQu9e8QsBRDmvPb7V+KoE40IDfv7kA=
+vec|v4-session-text|WTY4:|session|1|37|0|0|0|c2Vzc2lvbiDmloflm77mmJMg4oCUIGhrZGY=|WTY4:BAEBAAAAAAAA6uvkNtRIjA7k8sylUHlOSwdh/AusrLhiXQQ+TZSafj7oVcJ0V6oMY3eMQS6FdGTqGOiGAe7IYhutmAIihG/UtKjPSLYq2A==
+vec|v4-passphrase-image|WTY4:|passphrase|2|37|0|0|0|iVBORw0KGgoAAQIDf4D/|WTY4:BAIAAAEAAAQBQiZQ0QeBTgo03TETKqT1MRHhMbz+cks7CSBJdBOoLn1pBxvEOypeSd1WsS6/cE8qUqP3Y+h1iDSo9mo=
+vec|v4-passphrase-image-page|WTY4:|passphrase|3|37|2|3|0|iVBORw0KGgoAAQIDf4D/|WTY4:BAMAAAEAAAQBlvPa8yRB9Cy+aNvdaYMa8ZX9kd8G+rgG89YAAK3RvFvV8+I/7i6EbgnX+UbB0/dBwatTBODkLuf6T56apl0mYyEDarqXF0yAgbU=
+vec|v4-session-image-chunk|WTY4:|session|4|37|1|4|60|iVBORw0KGgoAAQIDf4D/|WTY4:BAQBAAAAAAAAAaQDIG8vJ7qHNY3G5rgHjlnwM7nw8R7DkU9L349UNVNo//eBkKkmQnamucDZxagAshrYE6aj/m/XSk2fO+lu5+7zl3oRG1u0T5zCiZWk
+vec|v3-passphrase-text|WTY3:|passphrase|1|31|0|0|0|bGVnYWN5IHYzIOaWh+WbvuaYkw==|WTY3:AwEAO50cCahcd12U2Z5VLYA0V9sAolz9EsAIIHvQPCzWUC6GaKultLyD/zSE45aPm2isaxbfTCMFRIZSKXimd91j
+vec|v3-session-text|WTY3:|session|1|31|0|0|0|bGVnYWN5IHYzIHNlc3Npb24g5paH5Zu+5piT|WTY3:AwEBUFKBLUoJTviSYGkIuAu7GnIynRuIBHGb/BAMCJFkY4ITCjfUG1Hw+hbNKTFnK6Py3O959vh1qJcrHqZgpjU5KXNFHd51wag=

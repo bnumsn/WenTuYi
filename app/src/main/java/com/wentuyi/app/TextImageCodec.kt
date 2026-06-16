@@ -1,5 +1,11 @@
 package com.wentuyi.app
 
+import com.wentuyi.protocol.Encoding
+
+import com.wentuyi.protocol.CryptoUtils
+
+import com.wentuyi.protocol.SecurePayloadCodec
+
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
@@ -205,7 +211,7 @@ object TextImageCodec {
      */
     private fun chunkIdFor(payload: String): String {
         val digest = CryptoUtils.sha256(payload.toByteArray(Charsets.UTF_8))
-        return CryptoUtils.Base32.encode(digest.copyOf(5)).take(8).lowercase()
+        return Encoding.Base32.encode(digest.copyOf(5)).take(8).lowercase()
     }
 
     // ─── Identity QR (X25519 public key) ──────────────────────────────────────
