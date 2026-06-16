@@ -15,6 +15,12 @@ $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $CliScript = Join-Path $ScriptDir "wentuyi-cli.ps1"
 $InsertScript = Join-Path $ScriptDir "wentuyi-insert.ps1"
+
+# A value of "-" reads it from stdin so sensitive text stays off this process' command line.
+if ($Text -eq "-") { $Text = [Console]::In.ReadToEnd() }
+if ($EncryptText -eq "-") { $EncryptText = [Console]::In.ReadToEnd() }
+if ($EncryptedQr -eq "-") { $EncryptedQr = [Console]::In.ReadToEnd() }
+if ($PlainImage -eq "-") { $PlainImage = [Console]::In.ReadToEnd() }
 if (-not $OutDir) { $OutDir = Join-Path $env:TEMP ("wentuyi-send-" + [Guid]::NewGuid().ToString("N")) }
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
@@ -126,7 +132,8 @@ function Convert-ToFileUri([string] $Path) {
 
 function Send-Body([string] $Body) {
     if ($App -eq "focused") {
-        & $InsertScript -Text $Body
+        # Pipe via stdin (-Text -) so the body isn't re-exposed in the insert process' argv.
+        $Body | & $InsertScript -Text -
         if ($LASTEXITCODE -ne 0) { throw "focused text insert failed" }
         return
     }

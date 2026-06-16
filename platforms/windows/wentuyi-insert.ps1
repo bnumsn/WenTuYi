@@ -12,6 +12,11 @@ $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 if (-not $CliScript) { $CliScript = Join-Path $ScriptDir "wentuyi-cli.ps1" }
 
+# A value of "-" reads it from stdin so sensitive text stays off this process' command line.
+if ($Text -eq "-") { $Text = [Console]::In.ReadToEnd() }
+if ($EncryptText -eq "-") { $EncryptText = [Console]::In.ReadToEnd() }
+if ($DecryptText -eq "-") { $DecryptText = [Console]::In.ReadToEnd() }
+
 if (-not ("WentuyiDirectInsertNative" -as [type])) {
 Add-Type -TypeDefinition @"
 using System;

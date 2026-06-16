@@ -44,6 +44,10 @@ while [ $# -gt 0 ]; do
 done
 
 [ -n "$MODE" ] || { usage; exit 2; }
+# "-" reads the value from stdin, keeping sensitive text off this wrapper's own argv.
+if [ "$VALUE" = "-" ]; then
+    VALUE="$(cat)"
+fi
 mkdir -p "$OUT_DIR"
 
 if ! command -v "$CLI" >/dev/null 2>&1 && [ ! -x "$CLI" ]; then
