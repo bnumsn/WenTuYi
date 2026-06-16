@@ -60,4 +60,19 @@ class EncodingBase64Test {
         assertFails { Encoding.b64Decode("!!!!") }
         assertFails { Encoding.b64Decode("Zm9v====x") }
     }
+
+    @Test
+    fun rejectsNonCanonicalRepresentations() {
+        // length % 4 == 1 is never valid (a lone char carries only 6 bits, not a whole byte),
+        // so you can't append one char to a 4k-length payload and decode to the same bytes.
+        assertFails { Encoding.b64Decode("A") }
+        assertFails { Encoding.b64Decode("Zm9vx") }              // 5 chars, %4==1
+        // Non-zero residual bits past the last whole byte are rejected:
+        assertEquals("fo", String(Encoding.b64Decode("Zm8")))   // residual 2 bits zero → ok
+        assertFails { Encoding.b64Decode("Zm9") }               // residual 2 bits non-zero → reject
+        // Canonical forms (with or without padding) still decode:
+        assertContentEquals("foo".toByteArray(), Encoding.b64Decode("Zm9v"))
+        assertContentEquals("foob".toByteArray(), Encoding.b64Decode("Zm9vYg"))   // 6 chars, valid
+        assertContentEquals("foob".toByteArray(), Encoding.b64Decode("Zm9vYg=="))
+    }
 }

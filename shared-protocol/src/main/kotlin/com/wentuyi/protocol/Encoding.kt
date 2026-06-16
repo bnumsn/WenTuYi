@@ -53,6 +53,10 @@ object Encoding {
         var end = text.length
         while (end > 0 && text[end - 1] == '=') end--
         if (end == 0) return ByteArray(0)
+        // A group of 1 base64 char (length % 4 == 1) carries only 6 bits — never a whole
+        // byte, so it's not a valid encoding. Rejecting it makes the text canonical: you
+        // can't append one extra char to a payload and have it decode to the same bytes.
+        if (end % 4 == 1) throw IllegalArgumentException("invalid base64 length")
         val out = java.io.ByteArrayOutputStream(end * 3 / 4)
         var buffer = 0
         var bits = 0
@@ -65,6 +69,11 @@ object Encoding {
                 bits -= 8
                 out.write(buffer ushr bits and 0xFF)
             }
+        }
+        // Canonical: the 2 or 4 residual bits must be zero — no extra data smuggled past
+        // the last whole byte. (Our encoder and java/android NO_WRAP both pad with zeros.)
+        if (bits > 0 && (buffer and ((1 shl bits) - 1)) != 0) {
+            throw IllegalArgumentException("non-canonical base64 trailing bits")
         }
         return out.toByteArray()
     }

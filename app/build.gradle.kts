@@ -74,9 +74,10 @@ dependencies {
     implementation("org.jetbrains.kotlin:kotlin-stdlib:1.9.24")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
 
-    // Portable JVM protocol core (P0.2 migration target). Pure JDK + BouncyCastle, no Android
-    // APIs and no java.util.Base64 floor — safe at minSdk 23. The app's own duplicate codec is
-    // still present; it is being deleted incrementally as call sites move onto this module.
+    // Portable JVM protocol core — the single source of the WTY codec / Double Ratchet.
+    // Pure JDK + BouncyCastle, no Android APIs and no java.util.Base64 floor (safe at minSdk
+    // 23). The app's old duplicate CryptoUtils/SecurePayloadCodec have been removed; the
+    // remaining app classes are thin Android glue (Base64/JSON/Identity boundary) over this.
     implementation(project(":shared-protocol"))
 
     // QR Code encoding/decoding — pure Java, no AndroidX.
