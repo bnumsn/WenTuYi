@@ -16,11 +16,9 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $CliScript = Join-Path $ScriptDir "wentuyi-cli.ps1"
 $InsertScript = Join-Path $ScriptDir "wentuyi-insert.ps1"
 
-# A value of "-" reads it from stdin so sensitive text stays off this process' command line.
-if ($Text -eq "-") { $Text = [Console]::In.ReadToEnd() }
-if ($EncryptText -eq "-") { $EncryptText = [Console]::In.ReadToEnd() }
-if ($EncryptedQr -eq "-") { $EncryptedQr = [Console]::In.ReadToEnd() }
-if ($PlainImage -eq "-") { $PlainImage = [Console]::In.ReadToEnd() }
+# NOTE: no "-"/stdin form (see wentuyi-insert.ps1) — PowerShell can't reliably pipe stdin into a
+# param-block script. The passphrase is still kept off argv (Invoke-WentuyiCli sets it via env);
+# only the directly-passed -EncryptText plaintext sits on this process' argv.
 if (-not $OutDir) { $OutDir = Join-Path $env:TEMP ("wentuyi-send-" + [Guid]::NewGuid().ToString("N")) }
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
@@ -133,8 +131,10 @@ function Convert-ToFileUri([string] $Path) {
 
 function Send-Body([string] $Body) {
     if ($App -eq "focused") {
-        # Pipe via stdin (-Text -) so the body isn't re-exposed in the insert process' argv.
-        $Body | & $InsertScript -Text -
+        # Pass via argv: $Body is ciphertext on the encrypt path (safe to expose) or the
+        # user's own plain text. Do NOT pipe it to insert.ps1 — that param-block script
+        # can't receive an in-process object pipeline and would hang on [Console]::In.
+        & $InsertScript -Text $Body
         if ($LASTEXITCODE -ne 0) { throw "focused text insert failed" }
         return
     }

@@ -42,6 +42,16 @@ $env:WENTUYI_PASSPHRASE = 'YOUR_KEY'
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\wentuyi-insert.ps1 -EncryptText 'hello'
 ```
 
+**Secret handling.** The shared passphrase is read from `WENTUYI_PASSPHRASE` (or the passphrase
+file) and forwarded to `desktop-cli` via the environment + stdin, never on its command line —
+verified on real PowerShell 5.1. The **hotkey** path (clipboard/selection → encrypt) keeps the
+plaintext in PowerShell variables only, so nothing sensitive hits a process command line. The
+direct `-EncryptText '<plaintext>'` form above, however, does put that one message on
+`wentuyi-insert.ps1`'s own command line (visible to same-user/admin via Process Explorer / WMI);
+prefer the hotkey for content you don't want there. (A `-`/stdin form was tried but PowerShell
+can't reliably pipe stdin into a param-block script, so it was removed rather than ship a
+hang-prone path.)
+
 When a native UI/IME owns the target control handle, pass `-TargetHwnd` to replace the target selection directly. This is the tested rich text primitive. Reading arbitrary selected host text still requires TSF; the clipboard bridge below is not the rich text target.
 
 Verified RichTextBox direct-insert output:

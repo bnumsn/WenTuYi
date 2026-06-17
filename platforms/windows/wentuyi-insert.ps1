@@ -12,10 +12,11 @@ $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 if (-not $CliScript) { $CliScript = Join-Path $ScriptDir "wentuyi-cli.ps1" }
 
-# A value of "-" reads it from stdin so sensitive text stays off this process' command line.
-if ($Text -eq "-") { $Text = [Console]::In.ReadToEnd() }
-if ($EncryptText -eq "-") { $EncryptText = [Console]::In.ReadToEnd() }
-if ($DecryptText -eq "-") { $DecryptText = [Console]::In.ReadToEnd() }
+# NOTE: no "-"/stdin form here. PowerShell can't reliably deliver piped stdin to a param-block
+# script (real-PS-5.1 testing: in-process object pipes hang on [Console]::In; OS pipes read
+# empty), so the secret-clean path on Windows is the hotkey → Invoke-WentuyiCli (passphrase via
+# env, text via the wentuyi-cli.ps1 stdin forward). Direct -EncryptText puts that one plaintext
+# on this process' argv; use the hotkey for content you don't want on a command line.
 
 if (-not ("WentuyiDirectInsertNative" -as [type])) {
 Add-Type -TypeDefinition @"
