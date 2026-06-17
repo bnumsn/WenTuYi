@@ -34,7 +34,8 @@ function Invoke-WentuyiCli([string[]] $ArgsList, [string] $Passphrase = $null, [
     try {
         if ($Passphrase) { $env:WENTUYI_PASSPHRASE = $Passphrase }
         if ($null -ne $StdinText) {
-            $output = $StdinText | & $CliScript (@($ArgsList) + "--stdin")
+            $cliArgs = @($ArgsList) + "--stdin"
+            $output = $StdinText | & $CliScript @cliArgs   # @-splat so $args flattens in the wrapper
         } else {
             $output = & $CliScript @ArgsList
         }
