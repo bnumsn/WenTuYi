@@ -7,6 +7,12 @@ import com.wentuyi.protocol.SecurePayloadCodec
 import java.nio.file.Path
 
 fun main(args: Array<String>) {
+    // Force UTF-8 stdout/stderr on every platform. On Windows the default System.out uses the
+    // console code page (e.g. GBK/IBM437), which mangles non-ASCII (Chinese) output into "?"/
+    // replacement chars; on Linux this is already UTF-8 so it's a no-op. stdin is read as
+    // explicit UTF-8 elsewhere, so this makes the CLI byte-deterministic across platforms.
+    System.setOut(java.io.PrintStream(java.io.FileOutputStream(java.io.FileDescriptor.out), true, "UTF-8"))
+    System.setErr(java.io.PrintStream(java.io.FileOutputStream(java.io.FileDescriptor.err), true, "UTF-8"))
     try {
         run(args.toList())
     } catch (e: Exception) {
