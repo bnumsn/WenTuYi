@@ -131,7 +131,7 @@ copy_body() {
 
 BODY=$(copy_body)
 printf '%s' "$BODY" >"$RESULT"
-case "$BODY" in WTY3:*) ;; *) echo "unexpected claws encrypted body: $BODY" >&2; exit 3;; esac
+case "$BODY" in WTY4:*) ;; *) echo "unexpected claws encrypted body: $BODY" >&2; exit 3;; esac
 ENC="$BODY"
 
 xdotool key BackSpace

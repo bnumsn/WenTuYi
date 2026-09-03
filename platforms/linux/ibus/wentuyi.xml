@@ -3,7 +3,7 @@
   <name>org.freedesktop.IBus.Wentuyi</name>
   <description>Wentuyi secure text input</description>
   <exec>/usr/bin/env WENTUYI_CLI=/usr/local/lib/wentuyi/desktop-cli/bin/desktop-cli python3 /usr/local/lib/wentuyi/ibus/wentuyi_ibus.py --ibus</exec>
-  <version>0.5.1</version>
+  <version>0.6.0</version>
   <author>Wentuyi</author>
   <license>MIT</license>
   <homepage>https://example.invalid/wentuyi</homepage>

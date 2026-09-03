@@ -24,7 +24,7 @@ import java.security.GeneralSecurityException
 import java.security.SecureRandom
 
 /**
- * v0.5.2 smoke test suite — split into @Test methods so
+ * v0.6.0 smoke test suite — split into @Test methods so
  * `connectedDebugAndroidTest` reports an honest test count instead of "0 tests run".
  * The legacy [WentuyiSmokeInstrumentation] is kept for manual `am instrument` use,
  * but the JUnit class below is the canonical CI entry point.
@@ -489,7 +489,7 @@ class WentuyiSmokeTests {
     }
 
     private companion object {
-        const val SOURCE = "文图易 v0.5.2 测试\nhello encrypted via QR + Argon2id"
+        const val SOURCE = "文图易 v0.6.0 测试\nhello encrypted via QR + Argon2id"
         const val PASSPHRASE = "wentuyi-smoke-key"
     }
 }

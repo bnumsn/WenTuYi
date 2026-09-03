@@ -181,16 +181,16 @@ private fun printHelp() {
 
         Commands:
           encrypt-text --passphrase KEY TEXT
-          decrypt-text --passphrase KEY WTY3_PAYLOAD
+          decrypt-text --passphrase KEY WTY_PAYLOAD
           plain-image --out FILE.png TEXT
           encrypted-qr --passphrase KEY --out-dir DIR [--prefix NAME] TEXT
-          payload-qr --out-dir DIR [--prefix NAME] WTY3_PAYLOAD
+          payload-qr --out-dir DIR [--prefix NAME] WTY_PAYLOAD
           gen-identity [--name NAME]
           restore-backup [WTYB1_BACKUP | --stdin]   (or WENTUYI_BACKUP env; backup = private key)
           sas --backup WTYB1_BACKUP (--peer-public B64URL | --peer-qr WTYID1_TEXT)
           session-encrypt --backup WTYB1_BACKUP (--peer-public B64URL | --peer-qr WTYID1_TEXT) TEXT
-          session-decrypt --backup WTYB1_BACKUP (--peer-public B64URL | --peer-qr WTYID1_TEXT) WTY3_PAYLOAD
-          chunk WTY3_PAYLOAD
+          session-decrypt --backup WTYB1_BACKUP (--peer-public B64URL | --peer-qr WTYID1_TEXT) WTY_PAYLOAD
+          chunk WTY_PAYLOAD
           assemble WTYP1_CHUNK...
         """.trimIndent(),
     )

@@ -126,9 +126,9 @@ TEXT=""
 for _ in $(seq 1 160); do
     sleep 0.1
     TEXT=$(cat "$RESULT")
-    case "$TEXT" in "prefix WTY3:"*" suffix") break;; esac
+    case "$TEXT" in "prefix WTY4:"*" suffix") break;; esac
 done
-case "$TEXT" in "prefix WTY3:"*" suffix") ;; *) echo "unexpected rich encrypted text: $TEXT" >&2; exit 3;; esac
+case "$TEXT" in "prefix WTY4:"*" suffix") ;; *) echo "unexpected rich encrypted text: $TEXT" >&2; exit 3;; esac
 grep -q '^prefix_tag=true$' "$TAG_RESULT"
 grep -q '^suffix_tag=true$' "$TAG_RESULT"
 ENC=${TEXT#prefix }

@@ -21,6 +21,7 @@ import com.google.zxing.RGBLuminanceSource
 import com.google.zxing.ReaderException
 import com.google.zxing.Result
 import com.google.zxing.qrcode.QRCodeReader
+import com.google.zxing.multi.qrcode.QRCodeMultiReader
 import com.google.zxing.common.GlobalHistogramBinarizer
 import com.google.zxing.common.HybridBinarizer
 import com.google.zxing.qrcode.QRCodeWriter
@@ -28,7 +29,7 @@ import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
 import java.security.SecureRandom
 
 /**
- * QR-Code-based codec for 文图易 v3.
+ * QR-Code-based codec for 文图易 WTY4 / WTY5 payload transport.
  *
  * Replaces the v2 self-rolled `WTYBW2/Dense/Grid` raster which was destroyed by JPEG
  * re-compression in any mainstream IM. All encrypted artefacts are now real QR codes
@@ -36,10 +37,10 @@ import java.security.SecureRandom
  * across multiple QRs when a single code would overflow.
  *
  * Wire formats produced by this codec:
- *   • single QR: payload is literally "WTY3:..." (a [SecurePayloadCodec] envelope) or
+ *   • single QR: payload is literally a Wentuyi payload ("WTY4:..." / "WTY5:..." etc.) or
  *                "WTYID1|<name>|<base64-public-key>" (a [KeyExchange] identity).
  *   • multi-QR : each QR carries `WTYP1|<id>|<N>|<T>|<chunk>` where chunks
- *                concatenate (in 1..T order) back to the original "WTY3:..." payload.
+ *                concatenate (in 1..T order) back to the original Wentuyi payload.
  *                Encryption happens once; chunking is text-only at the transport layer.
  */
 object TextImageCodec {
@@ -93,7 +94,7 @@ object TextImageCodec {
     /**
      * Renders [text] as a **plaintext** PNG that stays human-readable but is noisy and
      * jittered to make machine OCR / automated scraping harder. This is NOT encryption —
-     * anyone can read it; use the WTY3 paths when you need confidentiality. Ported and
+     * anyone can read it; use the encrypted payload paths when you need confidentiality. Ported and
      * hardened from the v1.0 prototype's AntiOcrRenderer (adds CJK wrapping + size cap).
      */
     fun renderAntiOcrTextImage(text: String): Bitmap {
@@ -234,6 +235,8 @@ object TextImageCodec {
 
     // ─── QR decoding ──────────────────────────────────────────────────────────
 
+    data class QrScan(val text: String, val centerX: Float, val centerY: Float)
+
     /**
      * Decodes one QR from a bitmap. Tries three combinations in order:
      *   1. [HybridBinarizer] on the original bitmap
@@ -241,7 +244,7 @@ object TextImageCodec {
      *   3. [HybridBinarizer] on a 2x-downscaled copy (helps when JPEG noise has
      *      smeared individual modules; downscaling averages the noise out)
      *
-     * v0.5.2 smoke testing showed the 2-binarizer fallback was insufficient for
+     * Earlier smoke testing showed the 2-binarizer fallback was insufficient for
      * Samsung's aggressive JPEG q=70 output — the third attempt cuts failure
      * rate from ~20% to <1%.
      */
@@ -271,9 +274,56 @@ object TextImageCodec {
         throw IllegalArgumentException("没有识别到二维码")
     }
 
+    /**
+     * Decodes every QR visible in a bitmap and keeps rough screen coordinates.
+     * Screenshot decrypt uses this to prefer the newest/lower chat bubble when older
+     * encrypted QRs are still visible above it.
+     */
+    fun readQrScans(bitmap: Bitmap): List<QrScan> {
+        val hints = mapOf<DecodeHintType, Any>(
+            DecodeHintType.TRY_HARDER to true,
+            DecodeHintType.CHARACTER_SET to "UTF-8",
+            DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE),
+        )
+        val half by lazy { downscale(bitmap) }
+        val attempts: List<Pair<Float, () -> com.google.zxing.Binarizer>> = listOf(
+            1f to { HybridBinarizer(bitmapToLuminanceSource(bitmap)) },
+            1f to { GlobalHistogramBinarizer(bitmapToLuminanceSource(bitmap)) },
+            2f to { HybridBinarizer(bitmapToLuminanceSource(half)) },
+        )
+        val scans = LinkedHashMap<String, QrScan>()
+        for ((scale, attemptFactory) in attempts) {
+            val binary = BinaryBitmap(attemptFactory())
+            val results = try {
+                QRCodeMultiReader().decodeMultiple(binary, hints).toList()
+            } catch (e: ReaderException) {
+                try {
+                    listOf(QRCodeReader().decode(binary, hints))
+                } catch (e2: ReaderException) {
+                    emptyList()
+                }
+            }
+            for (result in results) {
+                val scan = result.toQrScan(scale, bitmap.width, bitmap.height)
+                val existing = scans[scan.text]
+                if (existing == null || scan.centerY > existing.centerY) scans[scan.text] = scan
+            }
+        }
+        return scans.values.toList()
+    }
+
     /** Returns a half-size copy of [bitmap]; cheap and helps ZXing when modules are noisy. */
     private fun downscale(bitmap: Bitmap): Bitmap =
         Bitmap.createScaledBitmap(bitmap, bitmap.width / 2, bitmap.height / 2, true)
+
+    private fun Result.toQrScan(scale: Float, fallbackW: Int, fallbackH: Int): QrScan {
+        val points = resultPoints ?: emptyArray()
+        val cx = if (points.isEmpty()) fallbackW / 2f
+            else points.map { it.x * scale }.average().toFloat()
+        val cy = if (points.isEmpty()) fallbackH / 2f
+            else points.map { it.y * scale }.average().toFloat()
+        return QrScan(text, cx, cy)
+    }
 
     private fun decodeWith(reader: MultiFormatReader, binarizer: com.google.zxing.Binarizer): String {
         val bb = BinaryBitmap(binarizer)
@@ -297,8 +347,8 @@ object TextImageCodec {
     }
 
     /**
-     * Reads one QR code per bitmap and assembles a single WTY3 payload, handling both
-     * single-QR ("WTY3:...") and multi-QR ("WTYP1|...") inputs. Throws on inconsistent
+     * Reads one QR code per bitmap and assembles a single Wentuyi payload, handling both
+     * single-QR ("WTY4:..." / "WTY5:...") and multi-QR ("WTYP1|...") inputs. Throws on inconsistent
      * or missing chunks.
      */
     fun assembleEncryptedPayload(bitmaps: List<Bitmap>): String {
@@ -309,7 +359,7 @@ object TextImageCodec {
 
     fun assemblePayloadFromTexts(texts: List<String>): String {
         require(texts.isNotEmpty()) { "未识别到二维码" }
-        // Single-payload case: any bitmap already carries the full WTY3.
+        // Single-payload case: any bitmap already carries the full Wentuyi payload.
         for (t in texts) {
             if (SecurePayloadCodec.isPayload(t)) return t
         }
@@ -383,7 +433,7 @@ object TextImageCodec {
             EncodeHintType.CHARACTER_SET to "UTF-8",
             // Quiet zone: spec minimum is 4. Pushing higher (we tried 8) actually
             // hurts because ZXing rounds the per-module px down to fit dim, and the
-            // extra quiet zone eats into the budget. v0.5.2 retests confirmed 4 is
+            // extra quiet zone eats into the budget. Retests confirmed 4 is
             // the sweet spot when paired with the 3-binarizer fallback in readQrText.
             EncodeHintType.MARGIN to 4,
         )
@@ -392,7 +442,7 @@ object TextImageCodec {
 
         val mw = matrix.width
         val mh = matrix.height
-        // Trimmed from v0.5.1's (200/140/60) — wide white padding around the QR
+        // Trimmed from the old (200/140/60) geometry — wide white padding around the QR
         // confused ZXing's finder-pattern detector at low JPEG quality. The
         // paddingShift parameter is used by [encodeQrBitmapValidated] to retry
         // with slightly different geometry when the self-decode-check fails.
@@ -435,7 +485,7 @@ object TextImageCodec {
         // setPixel directly into the bitmap instead of canvas.drawRect(1px) — the
         // float-coordinate drawRect path triggered subpixel rendering on some GPUs,
         // bleeding the QR module edges and pushing ZXing into the ~20% flakiness
-        // we saw in v0.5.2 multi-QR tests. setPixel is pure CPU and guaranteed
+        // we saw in multi-QR tests. setPixel is pure CPU and guaranteed
         // pixel-exact.
         val pixels = IntArray(mw)
         for (y in 0 until mh) {

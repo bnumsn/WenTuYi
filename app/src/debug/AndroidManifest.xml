@@ -1,0 +1,9 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <activity-alias
+            android:name=".KeyboardTestDebugActivity"
+            android:exported="true"
+            android:label="键盘本地测试"
+            android:targetActivity=".KeyboardTestActivity" />
+    </application>
+</manifest>

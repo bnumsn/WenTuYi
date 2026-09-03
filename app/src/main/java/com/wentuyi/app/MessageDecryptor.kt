@@ -8,7 +8,7 @@ import android.content.Context
 import java.security.GeneralSecurityException
 
 /**
- * One central place for "decrypt a WTY3 payload regardless of who sent it".
+ * One central place for "decrypt a Wentuyi payload regardless of who sent it".
  *
  * v0.4 had this routing duplicated verbatim inside [DecryptActivity] and
  * [ScanActivity]; any behavioural change had to be made in two places and one of
@@ -30,7 +30,7 @@ object MessageDecryptor {
     }
 
     enum class Reason {
-        UNKNOWN_FORMAT,        // not WTY1/2/3 at all
+        UNKNOWN_FORMAT,        // not WTY1/2/3/4/5 at all
         SHARED_KEY_MISMATCH,   // tried passphrase, AEAD rejected
         SHARED_KEY_MISSING,    // PASSPHRASE-mode payload but no passphrase configured
         CONTACT_NOT_FOUND,     // SESSION_KEY mode and no contact matches

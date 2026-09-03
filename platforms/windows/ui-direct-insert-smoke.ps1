@@ -124,15 +124,15 @@ try {
             $box.Select("prefix ".Length, 0)
             Focus-Box $form $box
             & $InsertScript -EncryptText "direct rich" -TargetHwnd $box.Handle
-            Wait-Until { $box.Text.Contains("WTY3:") } 14000 "direct encrypted insert did not appear: $($box.Text)"
+            Wait-Until { $box.Text.Contains("WTY4:") } 14000 "direct encrypted insert did not appear: $($box.Text)"
             $encryptedText = $box.Text
-            if (-not ($encryptedText.StartsWith("prefix WTY3:") -and $encryptedText.EndsWith(" suffix"))) {
+            if (-not ($encryptedText.StartsWith("prefix WTY4:") -and $encryptedText.EndsWith(" suffix"))) {
                 throw "unexpected direct encrypted text: $encryptedText"
             }
             Assert-Style $box 0 ([System.Drawing.FontStyle]::Bold) ([System.Drawing.Color]::DarkGreen) "prefix style lost after direct encrypt insert"
             Assert-Style $box ($encryptedText.Length - 2) ([System.Drawing.FontStyle]::Italic) ([System.Drawing.Color]::DarkBlue) "suffix style lost after direct encrypt insert"
 
-            $payloadStart = $encryptedText.IndexOf("WTY3:", [StringComparison]::Ordinal)
+            $payloadStart = $encryptedText.IndexOf("WTY4:", [StringComparison]::Ordinal)
             $payloadLength = $encryptedText.Length - "prefix ".Length - " suffix".Length
             $payload = $encryptedText.Substring($payloadStart, $payloadLength)
             $box.Select($payloadStart, $payloadLength)
@@ -143,7 +143,7 @@ try {
             Assert-Style $box ($box.Text.Length - 2) ([System.Drawing.FontStyle]::Italic) ([System.Drawing.Color]::DarkBlue) "suffix style lost after direct decrypt insert"
 
             @(
-                "windows-direct-rich-encrypted-prefix=WTY3:",
+                "windows-direct-rich-encrypted-prefix=WTY4:",
                 "windows-direct-rich-decrypted=direct rich",
                 "windows-direct-rich-tags=preserved"
             ) | Out-File -LiteralPath $OutPath -Encoding UTF8

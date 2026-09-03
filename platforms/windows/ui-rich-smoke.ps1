@@ -162,14 +162,14 @@ public static class WentuyiRichUiSmokeHarness {
 
             SendRegisteredHotkey(VK_E);
             Debug("encrypt-hotkey-sent");
-            WaitUntil(delegate { return Ui(delegate { return box.Text.Contains("WTY3:"); }); }, 14000, "encrypted text did not appear");
+            WaitUntil(delegate { return Ui(delegate { return box.Text.Contains("WTY4:"); }); }, 14000, "encrypted text did not appear");
             string encryptedText = Ui(delegate { return box.Text; });
             Debug("encrypted-text=" + encryptedText);
-            if (!encryptedText.StartsWith("prefix WTY3:", StringComparison.Ordinal) || !encryptedText.EndsWith(" suffix", StringComparison.Ordinal)) {
+            if (!encryptedText.StartsWith("prefix WTY4:", StringComparison.Ordinal) || !encryptedText.EndsWith(" suffix", StringComparison.Ordinal)) {
                 throw new Exception("unexpected rich encrypted text: " + encryptedText);
             }
             AssertStyle(0, FontStyle.Bold, Color.DarkGreen, "prefix rich formatting was not preserved after encrypt");
-            int encryptedPayloadStart = encryptedText.IndexOf("WTY3:", StringComparison.Ordinal);
+            int encryptedPayloadStart = encryptedText.IndexOf("WTY4:", StringComparison.Ordinal);
             AssertStyle(encryptedPayloadStart, FontStyle.Underline, Color.DarkRed, "payload rich formatting was not preserved after encrypt");
             AssertStyle(encryptedText.Length - 2, FontStyle.Italic, Color.DarkBlue, "suffix rich formatting was not preserved after encrypt");
 
@@ -189,7 +189,7 @@ public static class WentuyiRichUiSmokeHarness {
             AssertStyle(Ui(delegate { return box.Text.Length; }) - 2, FontStyle.Italic, Color.DarkBlue, "suffix rich formatting was not preserved after decrypt");
 
             File.WriteAllLines(outPath, new string[] {
-                "windows-rich-encrypted-prefix=WTY3:",
+                "windows-rich-encrypted-prefix=WTY4:",
                 "windows-rich-decrypted=windows rich",
                 "windows-rich-tags=preserved"
             }, new UTF8Encoding(true));

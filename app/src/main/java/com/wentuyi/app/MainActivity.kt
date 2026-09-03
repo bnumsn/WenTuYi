@@ -1,6 +1,9 @@
 package com.wentuyi.app
 
+import com.wentuyi.protocol.SecurePayloadCodec
+
 import android.app.Activity
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color
@@ -30,6 +33,7 @@ import android.widget.TextView
 class MainActivity : Activity() {
 
     private lateinit var statusView: TextView
+    private lateinit var clipboardDecryptButton: Button
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -41,24 +45,27 @@ class MainActivity : Activity() {
             return
         }
         buildUi()
-        forwardIfSharedIntent(intent)
+        forwardIfDecryptIntent(intent)
     }
 
-    private fun isSharedIntent(intent: Intent?): Boolean =
-        intent?.action == Intent.ACTION_SEND || intent?.action == Intent.ACTION_SEND_MULTIPLE
+    private fun isSharedIntent(intent: Intent?): Boolean = when (intent?.action) {
+        Intent.ACTION_SEND, Intent.ACTION_SEND_MULTIPLE, Intent.ACTION_PROCESS_TEXT -> true
+        else -> false
+    }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        forwardIfSharedIntent(intent)
+        forwardIfDecryptIntent(intent)
     }
 
     override fun onResume() {
         super.onResume()
         refreshStatus()
+        refreshClipboardShortcut()
     }
 
-    private fun forwardIfSharedIntent(intent: Intent?) {
+    private fun forwardIfDecryptIntent(intent: Intent?) {
         if (intent == null) return
         when (intent.action) {
             Intent.ACTION_SEND, Intent.ACTION_SEND_MULTIPLE -> {
@@ -72,6 +79,13 @@ class MainActivity : Activity() {
                 startActivity(forward)
                 finish()
             }
+            Intent.ACTION_PROCESS_TEXT -> {
+                val text = intent.getCharSequenceExtra(Intent.EXTRA_PROCESS_TEXT)?.toString()?.trim()
+                if (!text.isNullOrEmpty()) {
+                    openDecryptText(text)
+                    finish()
+                }
+            }
         }
     }
 
@@ -82,8 +96,8 @@ class MainActivity : Activity() {
         }
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(22), dp(18), dp(22), dp(22))
         }
+        SystemBarPadding.apply(root, dp(22), dp(18), dp(22), dp(22))
         scroll.addView(root, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 
@@ -91,6 +105,17 @@ class MainActivity : Activity() {
 
         statusView = textView("", 14f, false).apply { setTextColor(Color.rgb(95, 102, 90)) }
         root.addView(statusView, matchWrapWithTop(8))
+
+        clipboardDecryptButton = Button(this).apply {
+            text = "解密剪贴板里的文图易密文"
+            isAllCaps = false
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+            visibility = View.GONE
+            setOnClickListener {
+                clipboardWentuyiPayload()?.let { openDecryptText(it) }
+            }
+        }
+        root.addView(clipboardDecryptButton, matchWrapWithTop(12))
 
         addPrimaryButton(root, "我的身份码 / 共享密钥") {
             startActivity(Intent(this, KeyManagementActivity::class.java))
@@ -134,6 +159,29 @@ class MainActivity : Activity() {
         } catch (e: RuntimeException) {
             e.message ?: "密钥状态未知"
         }
+    }
+
+    private fun refreshClipboardShortcut() {
+        clipboardDecryptButton.visibility =
+            if (clipboardWentuyiPayload() == null) View.GONE else View.VISIBLE
+    }
+
+    private fun clipboardWentuyiPayload(): String? = runCatching {
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+            ?: return@runCatching null
+        val clip = clipboard.primaryClip ?: return@runCatching null
+        if (clip.itemCount == 0) return@runCatching null
+        val text = clip.getItemAt(0).coerceToText(this)?.toString()?.trim()
+            ?: return@runCatching null
+        text.takeIf { SecurePayloadCodec.isPayload(it) || it.startsWith(DoubleRatchet.PREFIX_V5) }
+    }.getOrNull()
+
+    private fun openDecryptText(payload: String) {
+        startActivity(Intent(this, DecryptActivity::class.java).apply {
+            action = Intent.ACTION_SEND
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TEXT, payload)
+        })
     }
 
     // ─── Helpers ────────────────────────────────────────────────────────────

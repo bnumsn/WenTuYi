@@ -19,7 +19,7 @@ cat >"$COMPONENT_DIR/wentuyi.xml" <<XML
   <name>org.freedesktop.IBus.Wentuyi</name>
   <description>Wentuyi secure text input</description>
   <exec>/usr/bin/env WENTUYI_CLI=$LIBDIR/desktop-cli/bin/desktop-cli python3 $LIBDIR/ibus/wentuyi_ibus.py --ibus</exec>
-  <version>0.5.1</version>
+  <version>0.6.0</version>
   <author>Wentuyi</author>
   <license>MIT</license>
   <homepage>https://example.invalid/wentuyi</homepage>

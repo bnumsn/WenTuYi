@@ -57,7 +57,7 @@ When a native UI/IME owns the target control handle, pass `-TargetHwnd` to repla
 Verified RichTextBox direct-insert output:
 
 ```text
-windows-direct-rich-encrypted-prefix=WTY3:
+windows-direct-rich-encrypted-prefix=WTY4:
 windows-direct-rich-decrypted=direct rich
 windows-direct-rich-tags=preserved
 ```
@@ -71,7 +71,7 @@ $env:WENTUYI_PASSPHRASE = 'YOUR_KEY'
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\wentuyi-hotkey.ps1
 ```
 
-- `Ctrl+Alt+E`: copy current selection, encrypt it, paste the `WTY3:` payload.
+- `Ctrl+Alt+E`: copy current selection, encrypt it, paste the `WTY4:` payload.
 - `Ctrl+Alt+D`: copy current selection, decrypt it, paste plaintext.
 
 Do not use this bridge as the final rich text implementation. It depends on host Ctrl+C/Ctrl+V behavior and fails in real RichTextBox testing.
@@ -93,7 +93,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\ui-smoke.ps1
 Verified output:
 
 ```text
-windows-ui-encrypted-prefix=WTY3:
+windows-ui-encrypted-prefix=WTY4:
 windows-ui-decrypted=windows ui
 ```
 

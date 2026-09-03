@@ -202,7 +202,7 @@ def run_ibus() -> int:
     component = IBus.Component.new(
         "org.freedesktop.IBus.Wentuyi",
         "Wentuyi",
-        "0.5.1",
+        "0.6.0",
         "MIT",
         "Wentuyi",
         "https://example.invalid/wentuyi",
