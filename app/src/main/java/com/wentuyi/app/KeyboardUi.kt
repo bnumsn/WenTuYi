@@ -165,7 +165,7 @@ object KeyboardUi {
             ellipsize = android.text.TextUtils.TruncateAt.END
             gravity = Gravity.CENTER_VERTICAL
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-            setPadding(dp(ctx, 14), 0, dp(ctx, 14), 0)
+            setPadding(dp(ctx, 10), 0, dp(ctx, 10), 0)
             if (chineseMode) {
                 setTextColor(COLOR_ON_ACCENT)
                 background = roundedSelector(ctx, COLOR_ACCENT, COLOR_ACCENT_PRESSED, 14, Color.TRANSPARENT, 0)

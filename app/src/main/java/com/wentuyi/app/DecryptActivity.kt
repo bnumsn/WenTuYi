@@ -47,6 +47,8 @@ class DecryptActivity : Activity() {
     private lateinit var resultView: TextView
     private lateinit var imagesLayout: LinearLayout
     private var lastPlainText: String? = null
+    private var encryptInsteadButton: Button? = null
+    private lateinit var encryptInsteadHost: LinearLayout
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -117,6 +119,9 @@ class DecryptActivity : Activity() {
             visibility = View.GONE
         }
         root.addView(imagesLayout, matchWrapWithTop(12))
+
+        // Host for the "encrypt this instead" recovery button (see offerEncryptInstead).
+        encryptInsteadHost = root
 
         setContentView(scroll)
     }
@@ -222,8 +227,25 @@ class DecryptActivity : Activity() {
                 showResult(result)
             } catch (e: Exception) {
                 showFailure("解密失败", e.userMessage())
+                // Sharing plaintext here is an easy mistake — the share sheet lists both
+                // 文图易加密 and 文图易解密 side by side. Offer the other door instead of
+                // dead-ending on "不是文图易加密内容".
+                if (!SecurePayloadCodec.isPayload(payload) &&
+                    !payload.startsWith(DoubleRatchet.PREFIX_V5)) {
+                    offerEncryptInstead(payload)
+                }
             }
         }
+    }
+
+    private fun offerEncryptInstead(text: String) {
+        encryptInsteadButton?.let { encryptInsteadHost.removeView(it) }
+        val button = primaryButton("这不是密文 —— 改为加密这段文字") {
+            startActivity(EncryptActivity.intentFor(this, text))
+            finish()
+        }
+        encryptInsteadButton = button
+        encryptInsteadHost.addView(button, matchWrapWithTop(12))
     }
 
     private fun resultFromDecrypted(decrypted: SecurePayloadCodec.DecryptedPayload): DecryptionResult {

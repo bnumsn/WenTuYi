@@ -73,7 +73,6 @@ class TextImageImeService : InputMethodService() {
     private var decryptPanel: LinearLayout? = null
     private var decryptResultView: TextView? = null
     private var decryptImageView: ImageView? = null
-    private var modeChip: TextView? = null
     private var targetChip: TextView? = null
     private val toolStripViews = ArrayList<View>()
     private var compactRowsApplied = false
@@ -150,15 +149,6 @@ class TextImageImeService : InputMethodService() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        modeChip = TextView(this).apply {
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
-            gravity = Gravity.CENTER
-            setPadding(KeyboardUi.dp(context, 10), 0, KeyboardUi.dp(context, 10), 0)
-            setOnClickListener { toggleLanguageMode() }
-        }
-        bar.addView(modeChip, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.WRAP_CONTENT, KeyboardUi.candidateStripHeight(this)))
-
         candidateContainer = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -597,14 +587,37 @@ class TextImageImeService : InputMethodService() {
     // ─── Candidate strip ─────────────────────────────────────────────────────
 
     private fun refreshCandidates() {
-        updateModeChip()
         val container = candidateContainer ?: return
         container.removeAllViews()
         updateToolStripVisibility()
 
         if (!chineseMode || symbolsLayout || pinyinBuffer.isEmpty()) {
-            // Idle strip — like Gboard, blank when not composing pinyin. The 中/英
-            // state lives in the always-visible modeChip on the left.
+            // Nothing being composed. The candidate container still holds weight=1, so
+            // leaving it empty opened a wide gap in the middle of the strip that read as a
+            // layout failure. Fill it with the mode banner instead: it states which mode is
+            // active (users were typing in English without noticing and concluding the
+            // keyboard couldn't do Chinese) and doubles as the switch — so the standalone
+            // 中 chip that used to duplicate the bottom-row 中 key is gone.
+            if (!symbolsLayout) {
+                container.addView(
+                    KeyboardUi.modeBanner(
+                        this,
+                        // Four characters is the hard budget: the strip shares its width
+                        // with the target chip and four action buttons, leaving ~70dp of
+                        // text room, and anything longer ellipsised away exactly the
+                        // actionable half ("英文直输…"). In English the label states the
+                        // *action* rather than the state — the amber styling already says
+                        // "you are not in Chinese".
+                        if (chineseMode) "中文拼音" else "切回中文",
+                        chineseMode,
+                    ).apply {
+                        contentDescription = if (chineseMode)
+                            "当前中文拼音输入，点按切换到英文" else "当前英文直输，点按切换到中文拼音"
+                        setOnClickListener { toggleLanguageMode() }
+                    },
+                    KeyboardUi.candidateParams(this, 0, 1f),
+                )
+            }
             return
         }
 
@@ -613,7 +626,10 @@ class TextImageImeService : InputMethodService() {
             contentDescription = "按原样上屏拼音字母 $pinyinBuffer"
             setOnClickListener { commitRawPinyin() }
         }
-        val rawWeight = if (real.isEmpty()) 6.0f else 0.9f
+        // The raw-pinyin button is feedback ("this is what you typed"), not the thing the
+        // user wants to commit — at 0.9 against a single candidate's 1.0 it was taking
+        // almost half the strip. Keep it visible but let candidates dominate.
+        val rawWeight = if (real.isEmpty()) 6.0f else 0.55f
         container.addView(rawButton, KeyboardUi.candidateParams(this, 0, rawWeight))
         real.take(6).forEachIndexed { idx, candidate ->
             val button = KeyboardUi.candidateButton(this, candidate).apply {
@@ -623,23 +639,6 @@ class TextImageImeService : InputMethodService() {
                 setOnClickListener { commitPinyinCandidate(candidate) }
             }
             container.addView(button, KeyboardUi.candidateParams(this, 4, 1.0f))
-        }
-    }
-
-    private fun updateModeChip() {
-        val chip = modeChip ?: return
-        chip.contentDescription =
-            if (chineseMode) "当前中文拼音输入，点按切换到英文" else "当前英文直输，点按切换到中文拼音"
-        if (chineseMode) {
-            chip.text = "中"
-            chip.setTextColor(KeyboardUi.COLOR_ON_ACCENT)
-            chip.background = KeyboardUi.roundedSelector(this,
-                KeyboardUi.COLOR_ACCENT, KeyboardUi.COLOR_ACCENT_PRESSED, 14, Color.TRANSPARENT, 0)
-        } else {
-            chip.text = "En"
-            chip.setTextColor(KeyboardUi.COLOR_TEXT)
-            chip.background = KeyboardUi.roundedSelector(this,
-                KeyboardUi.COLOR_TOOLBAR_KEY, KeyboardUi.COLOR_TOOLBAR_PRESSED, 14, Color.TRANSPARENT, 0)
         }
     }
 
@@ -1023,16 +1022,16 @@ class TextImageImeService : InputMethodService() {
 
     // ─── Send-target resolution ──────────────────────────────────────────────
 
-    private fun resolveSendTarget(): SendController.SendTarget {
-        if (sendTargetIndex == 0) return SendController.SendTarget.SharedPassphrase
+    private fun resolveSendTarget(): SendTarget {
+        if (sendTargetIndex == 0) return SendTarget.SharedPassphrase
         // The user picked a specific contact. If we can't honour that exactly, refuse —
         // never silently re-encrypt to the shared passphrase, which everyone holding the
         // old shared key could read. Fail closed and tell the user to re-pick.
         val contact = contacts().getOrNull(sendTargetIndex - 1)
-            ?: return SendController.SendTarget.Unavailable("所选联系人已不存在，请长按加密图标重新选择目标")
+            ?: return SendTarget.Unavailable("所选联系人已不存在，请长按加密图标重新选择目标")
         val identity = runCatching { KeyExchange.loadIdentity(this) }.getOrNull()
-            ?: return SendController.SendTarget.Unavailable("身份密钥读取失败，无法按联系人加密；请到主 App 检查身份")
-        return SendController.SendTarget.Contact(contact, identity)
+            ?: return SendTarget.Unavailable("身份密钥读取失败，无法按联系人加密；请到主 App 检查身份")
+        return SendTarget.Contact(contact, identity)
     }
 
     private fun contacts(): List<KeyExchange.Contact> {

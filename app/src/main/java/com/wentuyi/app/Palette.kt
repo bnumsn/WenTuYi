@@ -28,6 +28,7 @@ object Palette {
     var textSubtle = 0; private set
     var accent = 0; private set
     var accentText = 0; private set       // accent tuned for text on `surface`
+    var onAccent = 0; private set         // text drawn on top of `accent`
     var warn = 0; private set
     var danger = 0; private set
     var ghost = 0; private set            // disabled / placeholder text
@@ -72,6 +73,7 @@ object Palette {
         textSubtle = 0xFF5F665A.toInt()
         accent = 0xFF207A59.toInt()
         accentText = 0xFF1A6349.toInt()
+        onAccent = 0xFFFFFFFF.toInt()
         warn = 0xFFB46400.toInt()
         danger = 0xFFC5221F.toInt()
         ghost = 0xFF969696.toInt()
@@ -109,6 +111,7 @@ object Palette {
         textSubtle = 0xFFA2A99A.toInt()
         accent = 0xFF4FBF93.toInt()
         accentText = 0xFF6FD3AA.toInt()
+        onAccent = 0xFF06231C.toInt()
         warn = 0xFFE0A050.toInt()
         danger = 0xFFFF7B75.toInt()
         ghost = 0xFF6E736A.toInt()

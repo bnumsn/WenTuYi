@@ -61,22 +61,6 @@ class SendController(
         FAILED,
     }
 
-    sealed class SendTarget {
-        object SharedPassphrase : SendTarget()
-        data class Contact(
-            val contact: KeyExchange.Contact,
-            val identity: KeyExchange.Identity,
-        ) : SendTarget()
-
-        /**
-         * Target resolution failed (selected contact vanished, identity key unreadable,
-         * …). The send is refused with [reason] — we must **never** silently fall back to
-         * the shared passphrase, or a message the user thinks is going to a verified
-         * contact could become readable by everyone who knows the old shared key.
-         */
-        data class Unavailable(val reason: String) : SendTarget()
-    }
-
     private data class TargetAnchor(val packageName: String?, val sessionId: Long, val fieldId: Int)
 
     fun commitPlainText(text: String) {
@@ -123,7 +107,7 @@ class SendController(
         onStatus(progressLabel("正在加密文字...", target))
         scope.launch {
             try {
-                val enc = withContext(Dispatchers.Default) { encryptText(text, target) }
+                val enc = withContext(Dispatchers.Default) { MessageEncryptor.encryptText(service, target, text) }
                 deliverEncryptedText(enc.payload, anchor, target, text, enc.noForwardSecrecy)
             } catch (e: Exception) {
                 onStatus("加密失败：${e.userMessage()}")
@@ -157,36 +141,6 @@ class SendController(
     }
 
     // ─── Crypto routing ──────────────────────────────────────────────────────
-
-    /** Encrypted text + whether it had to fall back off the forward-secret ratchet path. */
-    private class EncryptedText(val payload: String, val noForwardSecrecy: Boolean)
-
-    private fun encryptText(text: String, target: SendTarget): EncryptedText = when (target) {
-        is SendTarget.SharedPassphrase ->
-            EncryptedText(
-                SecurePayloadCodec.encryptTextToPayload(text, WentuyiSettings.getPassphrase(service)),
-                noForwardSecrecy = false,  // shared-key mode is a deliberate choice, not a downgrade
-            )
-        is SendTarget.Contact -> {
-            // Prefer the Double Ratchet (WTY5, forward-secret). Falls back to the WTY4
-            // session key only when the ratchet has no sending chain yet (responder before
-            // it has received the initiator's first message) — surfaced to the user below.
-            val ratchet = RatchetSession.encryptText(service, target.identity, target.contact, text)
-            if (ratchet != null) {
-                EncryptedText(ratchet, noForwardSecrecy = false)
-            } else {
-                val secret = KeyExchange.deriveSharedSecret(target.identity, target.contact.publicKey)
-                try {
-                    EncryptedText(SecurePayloadCodec.encryptTextWithSessionKey(text, secret),
-                        noForwardSecrecy = true)
-                } finally {
-                    CryptoUtils.wipe(secret)
-                }
-            }
-        }
-        // Defensive: callers reject Unavailable before encrypting; never downgrade here.
-        is SendTarget.Unavailable -> throw IllegalStateException(target.reason)
-    }
 
     /** QR bitmaps + whether it fell back off the forward-secret ratchet path. */
     private class EncryptedQr(val bitmaps: List<android.graphics.Bitmap>, val noForwardSecrecy: Boolean)

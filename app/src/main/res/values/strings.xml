@@ -1,6 +1,7 @@
 <resources>
     <string name="app_name">文图易</string>
     <string name="decrypt_share_name">文图易解密</string>
+    <string name="encrypt_share_name">文图易加密</string>
     <string name="ime_name">文图易键盘</string>
     <string name="ime_subtype_zh">中文</string>
 </resources>

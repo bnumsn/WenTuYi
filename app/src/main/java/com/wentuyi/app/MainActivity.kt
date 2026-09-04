@@ -34,6 +34,7 @@ class MainActivity : Activity() {
 
     private lateinit var statusView: TextView
     private lateinit var clipboardDecryptButton: Button
+    private lateinit var clipboardEncryptButton: Button
     private lateinit var keyboardBanner: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -161,6 +162,20 @@ class MainActivity : Activity() {
         statusView = textView("", 14f, false).apply { setTextColor(Palette.textSubtle) }
         root.addView(statusView, matchWrapWithTop(8))
 
+        // Clipboard is the one route that needs nothing from the host app at all — no
+        // keyboard switch, no <queries> declaration, no share sheet. Encrypt was missing
+        // its half of this pair, which meant the only way to encrypt was the IME.
+        clipboardEncryptButton = Button(this).apply {
+            text = "加密剪贴板里的文字"
+            isAllCaps = false
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+            visibility = View.GONE
+            setOnClickListener {
+                clipboardPlainText()?.let { startActivity(EncryptActivity.intentFor(this@MainActivity, it)) }
+            }
+        }
+        root.addView(clipboardEncryptButton, matchWrapWithTop(12))
+
         clipboardDecryptButton = Button(this).apply {
             text = "解密剪贴板里的文图易密文"
             isAllCaps = false
@@ -171,6 +186,22 @@ class MainActivity : Activity() {
             }
         }
         root.addView(clipboardDecryptButton, matchWrapWithTop(12))
+
+        // The permanent encrypt door. Until now encrypting was reachable only from the IME
+        // (i.e. only after replacing your keyboard) or from a clipboard shortcut that
+        // appeared only when the clipboard happened to hold plain text.
+        val encryptButton = Button(this).apply {
+            text = "加密一段文字"
+            isAllCaps = false
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
+            setTextColor(Palette.onAccent)
+            background = KeyboardUi.roundedSelector(
+                this@MainActivity, Palette.accent, Palette.accentText, 10, Color.TRANSPARENT, 0)
+            setPadding(0, dp(14), 0, dp(14))
+            stateListAnimator = null
+            setOnClickListener { startActivity(EncryptActivity.intentFor(this@MainActivity, "")) }
+        }
+        root.addView(encryptButton, matchWrapWithTop(16))
 
         addPrimaryButton(root, "我的身份码 / 共享密钥") {
             startActivity(Intent(this, KeyManagementActivity::class.java))
@@ -218,9 +249,26 @@ class MainActivity : Activity() {
     }
 
     private fun refreshClipboardShortcut() {
-        clipboardDecryptButton.visibility =
-            if (clipboardWentuyiPayload() == null) View.GONE else View.VISIBLE
+        val payload = clipboardWentuyiPayload()
+        clipboardDecryptButton.visibility = if (payload == null) View.GONE else View.VISIBLE
+        // Only offer to encrypt when the clipboard holds something that isn't already ours.
+        clipboardEncryptButton.visibility =
+            if (payload == null && clipboardPlainText() != null) View.VISIBLE else View.GONE
     }
+
+    /** Clipboard text that is *not* a Wentuyi payload — i.e. something worth encrypting. */
+    private fun clipboardPlainText(): String? = runCatching {
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+            ?: return@runCatching null
+        val clip = clipboard.primaryClip ?: return@runCatching null
+        if (clip.itemCount == 0) return@runCatching null
+        val text = clip.getItemAt(0).coerceToText(this)?.toString()?.trim()
+            ?: return@runCatching null
+        text.takeIf {
+            it.isNotEmpty() && it.length <= 20_000 &&
+                !SecurePayloadCodec.isPayload(it) && !it.startsWith(DoubleRatchet.PREFIX_V5)
+        }
+    }.getOrNull()
 
     private fun clipboardWentuyiPayload(): String? = runCatching {
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager

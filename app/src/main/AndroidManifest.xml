@@ -67,6 +67,35 @@
         </activity-alias>
 
         <activity
+            android:name=".EncryptActivity"
+            android:exported="false"
+            android:label="@string/encrypt_share_name" />
+
+        <!--
+            The encrypt entry point for people who keep their own keyboard. Two filters,
+            very different reliability:
+              SEND         — resolved by the system chooser, so it shows up from every app.
+              PROCESS_TEXT — only visible to host apps that declared <queries> for it, which
+                             most do not since Android 11. A bonus, not the main path.
+        -->
+        <activity-alias
+            android:name=".EncryptShareActivity"
+            android:exported="true"
+            android:label="@string/encrypt_share_name"
+            android:targetActivity=".EncryptActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.PROCESS_TEXT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity
             android:name=".OnboardingActivity"
             android:exported="false"
             android:label="文图易首次设置" />
