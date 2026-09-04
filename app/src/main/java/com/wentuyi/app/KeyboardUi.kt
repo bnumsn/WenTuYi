@@ -92,6 +92,21 @@ object KeyboardUi {
         return button
     }
 
+    /**
+     * Button for the decrypt panel. Not [toolbarButton]: that paints itself [COLOR_TOOLBAR_KEY],
+     * which is also the panel card's background, so the buttons vanished into it.
+     */
+    fun panelActionButton(ctx: Context, label: String): Button {
+        val button = Button(ctx)
+        stripChrome(button)
+        button.text = label
+        button.setTextColor(COLOR_TEXT)
+        button.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+        button.background = roundedSelector(
+            ctx, Palette.kbPanelButton, Palette.kbPanelButtonPressed, 10, Color.TRANSPARENT, 0)
+        return button
+    }
+
     /** Ghost-styled button for the raw-pinyin "commit as typed" entry. */
     fun rawPinyinButton(ctx: Context, label: String): Button {
         val button = Button(ctx)

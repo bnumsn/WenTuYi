@@ -41,6 +41,14 @@ object Palette {
     var kbFunctionPressed = 0; private set
     var kbToolbarKey = 0; private set
     var kbToolbarPressed = 0; private set
+    /**
+     * Buttons sitting *on* the decrypt panel card. Must differ from [kbToolbarKey], which is
+     * the card's own colour — they were both painted with it, so 写入/复制/关闭 rendered as
+     * bare text with no button shape at all. Third time this exact "two surfaces, one
+     * colour" mistake shipped, so PaletteTest now asserts the separation.
+     */
+    var kbPanelButton = 0; private set
+    var kbPanelButtonPressed = 0; private set
     var kbText = 0; private set
     var kbSubtle = 0; private set
     var kbAccent = 0; private set
@@ -85,6 +93,8 @@ object Palette {
         kbFunctionPressed = 0xFFCBD3DD.toInt()
         kbToolbarKey = 0xFFFFFFFF.toInt()
         kbToolbarPressed = 0xFFE6EAEE.toInt()
+        kbPanelButton = 0xFFE4E9EF.toInt()
+        kbPanelButtonPressed = 0xFFCED6E0.toInt()
         kbText = 0xFF1F2933.toInt()
         kbSubtle = 0xFF637083.toInt()
         kbAccent = 0xFF0F766E.toInt()
@@ -123,6 +133,8 @@ object Palette {
         kbFunctionPressed = 0xFF2E333B.toInt()
         kbToolbarKey = 0xFF23272E.toInt()
         kbToolbarPressed = 0xFF333941.toInt()
+        kbPanelButton = 0xFF3A414B.toInt()
+        kbPanelButtonPressed = 0xFF4A525E.toInt()
         kbText = 0xFFE6EAF0.toInt()
         kbSubtle = 0xFF9AA5B4.toInt()
         kbAccent = 0xFF14B8A6.toInt()

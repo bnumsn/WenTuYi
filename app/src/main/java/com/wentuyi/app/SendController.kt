@@ -55,7 +55,7 @@ class SendController(
         const val MAX_FIELD_CHARS = 100_000
     }
 
-    private enum class TextReplaceResult {
+    enum class TextReplaceResult {
         COMMITTED,
         SOURCE_CHANGED,
         FAILED,
@@ -190,6 +190,17 @@ class SendController(
             TextReplaceResult.SOURCE_CHANGED -> onStatus("输入内容已变化，未写入")
             TextReplaceResult.FAILED -> onStatus("写入失败")
         }
+    }
+
+    /**
+     * Swap [sourceText] in the focused field for [replacement], if the field still holds
+     * exactly [sourceText]. Public because the decrypt panel needs it too: its 写入 button
+     * used to plain-commit, which appended the plaintext *after* the ciphertext it had just
+     * been decrypted from, leaving "WTY4:…==你好" in the box.
+     */
+    fun replaceFieldText(sourceText: String, replacement: String): TextReplaceResult {
+        val connection = service.currentInputConnection ?: return TextReplaceResult.FAILED
+        return replaceVisibleTextIfMatches(connection, sourceText, replacement)
     }
 
     private fun replaceVisibleTextIfMatches(

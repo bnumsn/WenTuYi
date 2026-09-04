@@ -38,6 +38,7 @@ class PaletteTest {
         Triple("键盘次要/工具键", Palette.kbSubtle, Palette.kbToolbarKey),
         Triple("强调上的文字", Palette.kbOnAccent, Palette.kbAccent),
         Triple("警告文字/警告底", Palette.kbWarnText, Palette.kbWarnBg),
+        Triple("面板按钮文字/面板按钮", Palette.kbText, Palette.kbPanelButton),
     )
 
     @Test fun both_schemes_meet_readable_contrast() {
@@ -48,6 +49,29 @@ class PaletteTest {
                 assertTrue(
                     "${if (dark) "深色" else "浅色"} $name 对比度仅 %.2f:1（需 ≥ 4.5:1）".format(ratio),
                     ratio >= 4.5,
+                )
+            }
+        }
+    }
+
+    @Test fun surfaces_stacked_on_each_other_are_distinguishable() {
+        // Every pair here is "a thing drawn on top of another thing". Painting both with the
+        // same colour has now shipped three times — invisible letter keys, a white card under
+        // near-white text, and 写入/复制/关闭 rendering as bare text on the decrypt panel —
+        // and each time it was invisible to every test we had, because the palette itself was
+        // fine. What was wrong was two surfaces sharing a value.
+        val stacked = listOf(
+            Triple("键帽/键盘面板", Palette.kbKey, Palette.kbPanel),
+            Triple("功能键/键盘面板", Palette.kbFunctionKey, Palette.kbPanel),
+            Triple("解密面板按钮/解密面板底", Palette.kbPanelButton, Palette.kbToolbarKey),
+            Triple("卡片/窗口背景", Palette.card, Palette.surface),
+        )
+        for (dark in listOf(false, true)) {
+            applyScheme(dark)
+            for ((name, fg, bg) in stacked) {
+                assertTrue(
+                    "${if (dark) "深色" else "浅色"} $name 同色，看不出边界",
+                    fg != bg && contrast(fg, bg) > 1.06,
                 )
             }
         }

@@ -76,6 +76,8 @@ class TextImageImeService : InputMethodService() {
     private var targetChip: TextView? = null
     private val toolStripViews = ArrayList<View>()
     private var compactRowsApplied = false
+    /** Ciphertext read out of the input box by the last 解 — see the 写入 button. */
+    private var lastDecryptedFieldSource: String? = null
     private var lastDecryptedText: String? = null
     private var lastDecryptedImageUri: Uri? = null
 
@@ -261,7 +263,10 @@ class TextImageImeService : InputMethodService() {
     // ─── In-chat decrypt panel ────────────────────────────────────────────────
 
     private sealed class DecryptInput {
-        data class Payload(val text: String) : DecryptInput()
+        /** [fromInputBox] distinguishes "decrypted the field's own content" — where writing
+         *  the plaintext back must *replace* the ciphertext — from clipboard/screen sources,
+         *  where inserting at the cursor is right. */
+        data class Payload(val text: String, val fromInputBox: Boolean) : DecryptInput()
         data class Images(val uris: List<Uri>) : DecryptInput()
     }
 
@@ -309,8 +314,26 @@ class TextImageImeService : InputMethodService() {
                 return@panelButton
             }
             val text = lastDecryptedText
-            if (text.isNullOrBlank()) toast("没有解密结果")
-            else currentInputConnection?.commitText(text, 1) ?: toast("当前输入框不可写")
+            if (text.isNullOrBlank()) { toast("没有解密结果"); return@panelButton }
+            val source = lastDecryptedFieldSource
+            if (source != null) {
+                // The ciphertext came out of this very field: swap it for the plaintext
+                // instead of appending, which used to leave "WTY4:…==明文" in the box.
+                when (sendController.replaceFieldText(source, text)) {
+                    SendController.TextReplaceResult.COMMITTED -> {
+                        lastDecryptedFieldSource = null
+                        hideDecryptPanel()
+                        toast("已写入解密结果")
+                    }
+                    SendController.TextReplaceResult.SOURCE_CHANGED -> toast("输入内容已变化，未写入")
+                    SendController.TextReplaceResult.FAILED -> toast("写入失败")
+                }
+            } else if (currentInputConnection?.commitText(text, 1) == true) {
+                hideDecryptPanel()
+                toast("已写入解密结果")
+            } else {
+                toast("当前输入框不可写")
+            }
         }, KeyboardUi.toolbarParams(this, 0, 1f))
         actions.addView(panelButton("复制") {
             val imageUri = lastDecryptedImageUri
@@ -332,7 +355,7 @@ class TextImageImeService : InputMethodService() {
     }
 
     private fun panelButton(label: String, action: () -> Unit): Button =
-        KeyboardUi.toolbarButton(this, label).apply {
+        KeyboardUi.panelActionButton(this, label).apply {
             contentDescription = when (label) {
                 "写入" -> "把解密结果写入当前输入框"
                 "复制" -> "复制解密结果"
@@ -439,11 +462,14 @@ class TextImageImeService : InputMethodService() {
                 val text = withContext(Dispatchers.Default) { decryptInput(input) }
                 lastDecryptedText = text
                 lastDecryptedImageUri = null
+                lastDecryptedFieldSource =
+                    (input as? DecryptInput.Payload)?.takeIf { it.fromInputBox }?.text
                 showDecryptPanel(text)
                 showTransientTargetStatus("解密完成")
             } catch (e: Exception) {
                 lastDecryptedText = null
                 lastDecryptedImageUri = null
+                lastDecryptedFieldSource = null
                 val msg = "解密失败：${e.userMessage()}"
                 showDecryptPanel(msg)
                 toast(msg)
@@ -452,7 +478,7 @@ class TextImageImeService : InputMethodService() {
     }
 
     private fun findDecryptInput(): DecryptInput? {
-        decryptPayloadFromCurrentInput()?.let { return DecryptInput.Payload(it) }
+        decryptPayloadFromCurrentInput()?.let { return DecryptInput.Payload(it, fromInputBox = true) }
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
             ?: return null
         val clip = clipboard.primaryClip ?: return null
@@ -460,10 +486,10 @@ class TextImageImeService : InputMethodService() {
         for (i in 0 until clip.itemCount) {
             val item = clip.getItemAt(i) ?: continue
             item.text?.toString()?.trim()?.takeIf { isWentuyiPayload(it) }?.let {
-                return DecryptInput.Payload(it)
+                return DecryptInput.Payload(it, fromInputBox = false)
             }
             item.coerceToText(this)?.toString()?.trim()?.takeIf { isWentuyiPayload(it) }?.let {
-                return DecryptInput.Payload(it)
+                return DecryptInput.Payload(it, fromInputBox = false)
             }
             item.uri?.let { uris += it }
         }
