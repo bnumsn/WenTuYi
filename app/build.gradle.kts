@@ -12,8 +12,12 @@ private val keystoreProps = Properties().apply {
     if (f.exists()) f.inputStream().use { load(it) }
 }
 
+// Empty counts as absent: CI passes these through as env vars that are the empty string
+// when the corresponding secret isn't configured, and `?:` alone would happily hand
+// file("") to the signing config ("path may not be null or empty string").
 private fun keystoreProp(name: String, env: String): String? =
-    keystoreProps.getProperty(name) ?: System.getenv(env)
+    keystoreProps.getProperty(name)?.takeIf { it.isNotBlank() }
+        ?: System.getenv(env)?.takeIf { it.isNotBlank() }
 
 private val releaseStore: String? = keystoreProp("storeFile", "WENTUYI_KEYSTORE")
 
