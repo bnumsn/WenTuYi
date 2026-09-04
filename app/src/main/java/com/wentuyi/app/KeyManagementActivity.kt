@@ -65,8 +65,8 @@ class KeyManagementActivity : Activity() {
         }
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(22), dp(18), dp(22), dp(22))
         }
+        SystemBarPadding.apply(root, dp(22), dp(18), dp(22), dp(22))
         scroll.addView(root, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 
@@ -135,7 +135,15 @@ class KeyManagementActivity : Activity() {
         // Migrate any v0.4 / v0.5 contacts saved before the low-order pubkey check.
         // Silent if nothing changes; surface the count when poisoned rows were dropped
         // so the user knows why a name vanished.
-        val pruned = KeyExchange.pruneInvalidContacts(this)
+        val pruned = try {
+            KeyExchange.pruneInvalidContacts(this)
+        } catch (e: Exception) {
+            // The contact blob is Keystore-wrapped and fails closed; show why rather than
+            // crashing the screen the user came to in order to fix it.
+            statusView.text = e.message ?: "联系人列表读取失败"
+            contactsContainer.addView(subtle("联系人列表无法读取，请重新扫码添加联系人"), matchWrap())
+            return
+        }
         if (pruned > 0) {
             statusView.text = "已清理 $pruned 个无效联系人（低阶/损坏公钥）"
         }
@@ -193,6 +201,16 @@ class KeyManagementActivity : Activity() {
                 setOnClickListener { showRemoveDialog(contact) }
             }, weightWrapWithLeft(1, 10))
             row.addView(actionsRow, matchWrapWithTop(4))
+            // Second row: the recovery action. Kept off the main row so the three everyday
+            // buttons stay readable, and labelled plainly because this is what a user lands
+            // on after "对方消息一直解不开".
+            val recoveryRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            recoveryRow.addView(Button(this).apply {
+                text = "重置加密会话"
+                isAllCaps = false
+                setOnClickListener { showRestartRatchetDialog(contact) }
+            }, weightWrap(1))
+            row.addView(recoveryRow, matchWrapWithTop(4))
             contactsContainer.addView(row, matchWrapWithTop(10))
         }
     }
@@ -289,6 +307,38 @@ class KeyManagementActivity : Activity() {
             .show()
     }
 
+    /**
+     * Opens a fresh ratchet epoch with [contact]. This is the escape hatch for a session
+     * that has gone out of sync — typically because this device reinstalled or had its data
+     * cleared mid-conversation, leaving both sides holding root keys that no longer relate.
+     * The peer adopts the new epoch automatically on our next message, so only one side has
+     * to do this; the identity keypair and the verified flag are untouched.
+     */
+    private fun showRestartRatchetDialog(contact: KeyExchange.Contact) {
+        AlertDialog.Builder(this)
+            .setTitle("重置与「${contact.name}」的加密会话")
+            .setMessage(
+                "什么时候用：对方发来的加密消息一直提示无法解密（多半是任一方重装过、清过数据或用备份码换过机）。\n\n" +
+                    "会发生什么：与 TA 的前向保密会话重新开始。此后你给 TA 发的第一条消息会自动让对方切到新会话，" +
+                    "对方无需做任何操作。\n\n" +
+                    "代价：还没解密的旧消息将永久无法解密。你的身份码、备份码和「已验证」标记都不受影响。"
+            )
+            .setPositiveButton("重置会话") { _, _ ->
+                scope.launch {
+                    statusView.text = try {
+                        val identity = KeyExchange.loadIdentity(this@KeyManagementActivity)
+                            ?: throw IllegalStateException("还没有身份码")
+                        RatchetSession.restart(this@KeyManagementActivity, identity, contact)
+                        "已重置与「${contact.name}」的加密会话，请给 TA 发一条消息完成恢复。"
+                    } catch (e: Exception) {
+                        "重置失败：${e.message}"
+                    }
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
     private fun showRemoveDialog(contact: KeyExchange.Contact) {
         AlertDialog.Builder(this)
             .setTitle("移除联系人")
@@ -336,7 +386,7 @@ class KeyManagementActivity : Activity() {
                 container.addView(toggleBtn, matchWrap())
                 val dialog = AlertDialog.Builder(this@KeyManagementActivity)
                     .setTitle("身份备份码")
-                    .setMessage("把这段抄写或截图保存到密码管理器。任何人拿到都能冒充你 — 不要发到网上、不要存云盘。\n\n说明：发给已验证联系人的加密文本已启用前向保密 (Double Ratchet)；但共享密钥、加密二维码及棘轮首条消息暂无 PFS，私钥泄漏可能导致这部分历史消息被解密。")
+                    .setMessage("把这段抄写或截图保存到密码管理器。任何人拿到都能冒充你 — 不要发到网上、不要存云盘。\n\n说明：发给已验证联系人的加密文本和二维码会优先使用前向保密 (Double Ratchet)；但共享密钥和棘轮首条消息暂无 PFS，私钥泄漏可能导致这部分历史消息被解密。")
                     .setView(container)
                     .setPositiveButton("复制到剪贴板") { _, _ ->
                         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager

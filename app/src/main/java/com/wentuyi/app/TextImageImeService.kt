@@ -1,10 +1,24 @@
 package com.wentuyi.app
 
+import com.wentuyi.protocol.SecurePayloadCodec
+
+import android.annotation.SuppressLint
 import android.app.AlertDialog
+import android.content.BroadcastReceiver
+import android.content.ClipData
+import android.content.ClipDescription
+import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.Color
 import android.inputmethodservice.InputMethodService
+import android.net.Uri
 import android.os.Build
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.text.TextUtils
 import android.text.InputType
 import android.util.TypedValue
 import android.view.Gravity
@@ -13,13 +27,19 @@ import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.ExtractedTextRequest
 import android.view.inputmethod.InputMethodManager
+import android.view.inputmethod.InputConnection
+import android.view.inputmethod.InputContentInfo
 import android.widget.Button
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Wentuyi IME — Gboard-style layout (v0.6 redesign).
@@ -41,23 +61,30 @@ import kotlinx.coroutines.cancel
  *   └──────────────────────────────┘
  *
  * The keyboard itself just types into the host app (no more 直输/编辑 dual mode).
- * All encryption lives behind the 🔒 button: it reads whatever text is already in
- * the host's input box, then offers 密文 / 密图 / 普通图片 and a send-target picker
- * in a dialog. Status feedback is a transient Toast, not a permanent status row.
+ * The action strip reads whatever text is already in the host's input box. Tap 密文
+ * to replace text with an encrypted payload, tap 密图 to insert/share an encrypted QR,
+ * and tap the target chip to choose shared-key vs contact encryption.
  */
 class TextImageImeService : InputMethodService() {
 
     // ─── State ───────────────────────────────────────────────────────────────
     private var candidateContainer: LinearLayout? = null
     private var keyboardContainer: LinearLayout? = null
+    private var decryptPanel: LinearLayout? = null
+    private var decryptResultView: TextView? = null
+    private var decryptImageView: ImageView? = null
     private var modeChip: TextView? = null
+    private var targetChip: TextView? = null
+    private val toolStripViews = ArrayList<View>()
+    private var lastDecryptedText: String? = null
+    private var lastDecryptedImageUri: Uri? = null
 
     private var chineseMode = true
     private var symbolsLayout = false
     private var shiftEnabled = false
     private var pinyinBuffer = ""
 
-    /** 0 = shared passphrase; 1..N = the N-th contact (WTY3 session key). */
+    /** 0 = shared passphrase; 1..N = the N-th contact (WTY5 ratchet / WTY4 fallback). */
     private var sendTargetIndex = 0
     private var imeSessionId = 0L
 
@@ -68,31 +95,38 @@ class TextImageImeService : InputMethodService() {
         android.content.SharedPreferences.OnSharedPreferenceChangeListener? = null
 
     private val scope: CoroutineScope = MainScope()
+    private val uiHandler = Handler(Looper.getMainLooper())
+    private var targetChipReset: Runnable? = null
+    private var screenDecryptReceiver: BroadcastReceiver? = null
     private lateinit var sendController: SendController
 
     private companion object {
         /** Cap for getTextBefore/AfterCursor — large enough for any realistic message. */
         const val MAX_FIELD_CHARS = 100_000
+        const val BOTTOM_SYSTEM_SAFE_AREA_DP = 34
     }
 
     override fun onCreate() {
         super.onCreate()
+        registerScreenDecryptReceiver()
         contactsPrefsListener = WentuyiSettings.watchContactsChanges(this) {
             cachedContacts = null
+            updateTargetChip()
         }
     }
 
     override fun onCreateInputView(): View {
         sendController = SendController(this, scope, ::toast, { resolveSendTarget() }, { imeSessionId })
+        toolStripViews.clear()
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(KeyboardUi.dp(context, 4), KeyboardUi.dp(context, 4),
-                KeyboardUi.dp(context, 4), KeyboardUi.dp(context, 4))
+                KeyboardUi.dp(context, 4), KeyboardUi.dp(context, BOTTOM_SYSTEM_SAFE_AREA_DP))
             setBackgroundColor(KeyboardUi.COLOR_PANEL)
         }
 
-        // ── Candidate strip: [中/英 chip] [candidates…] [🔒] ──
+        // ── Candidate strip: [中/英] [candidates…] [target] [图] [密文] [密图] ──
         val bar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -112,24 +146,44 @@ class TextImageImeService : InputMethodService() {
         }
         bar.addView(candidateContainer, LinearLayout.LayoutParams(0, KeyboardUi.dp(this, 44), 1f))
 
-        // Three one-tap send icons on the right of the candidate strip. No more
-        // 🔒 → panel two-step: tapping each icon reads the current input-box text and
-        // immediately performs the action. 图片 = plain text→image (not encrypted),
-        // 密文 = encrypted text replacing the box, 二维码 = encrypted QR image.
-        // Long-press 密文 / 二维码 cycles the encryption target.
-        bar.addView(sendIcon("🖼", accent = false, onLong = { toggleAntiOcrWithToast() }) { sendPlainImage() },
-            sendIconParams())
-        bar.addView(sendIcon("🔒", accent = true, onLong = { cycleTargetWithToast() }) { sendCipherText() },
-            sendIconParams())
-        bar.addView(sendIcon("▦", accent = true, onLong = { cycleTargetWithToast() }) { sendCipherQr() },
-            sendIconParams())
+        targetChip = TextView(this).apply {
+            gravity = Gravity.CENTER
+            isSingleLine = true
+            ellipsize = TextUtils.TruncateAt.END
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            includeFontPadding = false
+            setPadding(KeyboardUi.dp(context, 8), 0, KeyboardUi.dp(context, 8), 0)
+            setOnClickListener { showTargetPicker() }
+            setOnLongClickListener { showTargetPicker(); true }
+        }
+        bar.addView(targetChip, LinearLayout.LayoutParams(
+            KeyboardUi.dp(this, 88), KeyboardUi.dp(this, 40)).apply {
+            leftMargin = KeyboardUi.dp(this@TextImageImeService, 4)
+        })
+        toolStripViews += targetChip!!
+
+        // Three one-tap send actions. Plain text labels are intentional here: in testing,
+        // icon-only 🖼 / 🔒 / ▦ looked disabled or unclear next to real keyboards.
+        addToolAction(bar, sendAction("解", accent = false, contentDescription = "就地解密密文或二维码",
+            onLong = { hideDecryptPanel() }) { decryptInKeyboard() }, 42)
+        addToolAction(bar, sendAction("图", accent = false, contentDescription = "生成文字图片",
+            onLong = { toggleAntiOcrWithToast() }) { sendPlainImage() }, 42)
+        addToolAction(bar, sendAction("密文", accent = true, contentDescription = "写入加密文字",
+            onLong = { showTargetPicker() }) { sendCipherText() }, 58)
+        addToolAction(bar, sendAction("密图", accent = true, contentDescription = "插入或分享加密二维码",
+            onLong = { showTargetPicker() }) { sendCipherQr() }, 58)
         root.addView(bar, KeyboardUi.matchWrap())
+
+        root.addView(buildDecryptPanel(), KeyboardUi.matchWrapWithTop(this, 4))
 
         keyboardContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(keyboardContainer, KeyboardUi.matchWrapWithTop(this, 4))
 
         refreshKeyboard()
         refreshCandidates()
+        updateTargetChip()
+        updateToolStripVisibility()
+        consumePendingScreenDecryptResult()
         return root
     }
 
@@ -142,6 +196,8 @@ class TextImageImeService : InputMethodService() {
         }
         cachedContacts = null
         refreshCandidates()
+        updateTargetChip()
+        consumePendingScreenDecryptResult()
     }
 
     override fun onFinishInput() {
@@ -151,10 +207,294 @@ class TextImageImeService : InputMethodService() {
     }
 
     override fun onDestroy() {
+        targetChipReset?.let { uiHandler.removeCallbacks(it) }
+        screenDecryptReceiver?.let { runCatching { unregisterReceiver(it) } }
         contactsPrefsListener?.let { WentuyiSettings.stopWatchingContacts(this, it) }
         scope.cancel()
         super.onDestroy()
     }
+
+    // ─── In-chat decrypt panel ────────────────────────────────────────────────
+
+    private sealed class DecryptInput {
+        data class Payload(val text: String) : DecryptInput()
+        data class Images(val uris: List<Uri>) : DecryptInput()
+    }
+
+    private fun buildDecryptPanel(): LinearLayout {
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            setPadding(KeyboardUi.dp(context, 10), KeyboardUi.dp(context, 8),
+                KeyboardUi.dp(context, 10), KeyboardUi.dp(context, 8))
+            background = KeyboardUi.roundedSelector(context,
+                KeyboardUi.COLOR_TOOLBAR_KEY, KeyboardUi.COLOR_TOOLBAR_KEY, 8,
+                KeyboardUi.COLOR_STROKE, 1)
+        }
+        decryptResultView = TextView(this).apply {
+            setTextColor(KeyboardUi.COLOR_TEXT)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            maxLines = 3
+            ellipsize = TextUtils.TruncateAt.END
+            text = ""
+        }
+        panel.addView(decryptResultView, KeyboardUi.matchWrap())
+        decryptImageView = ImageView(this).apply {
+            adjustViewBounds = true
+            maxHeight = KeyboardUi.dp(context, 180)
+            setBackgroundColor(Color.WHITE)
+            visibility = View.GONE
+        }
+        panel.addView(decryptImageView, KeyboardUi.matchWrapWithTop(this, 6))
+
+        val actions = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        actions.addView(panelButton("写入") {
+            val imageUri = lastDecryptedImageUri
+            if (imageUri != null) {
+                commitImageToCurrentInput(imageUri)
+                return@panelButton
+            }
+            val text = lastDecryptedText
+            if (text.isNullOrBlank()) toast("没有解密结果")
+            else currentInputConnection?.commitText(text, 1) ?: toast("当前输入框不可写")
+        }, KeyboardUi.toolbarParams(this, 0, 1f))
+        actions.addView(panelButton("复制") {
+            val imageUri = lastDecryptedImageUri
+            if (imageUri != null) {
+                copyImageToClipboard(imageUri)
+                return@panelButton
+            }
+            val text = lastDecryptedText
+            if (text.isNullOrBlank()) toast("没有解密结果")
+            else copyTextToClipboard(text)
+        }, KeyboardUi.toolbarParams(this, 6, 1f))
+        actions.addView(panelButton("关闭") { hideDecryptPanel() },
+            KeyboardUi.toolbarParams(this, 6, 1f))
+        panel.addView(actions, KeyboardUi.matchWrapWithTop(this, 6))
+
+        decryptPanel = panel
+        return panel
+    }
+
+    private fun panelButton(label: String, action: () -> Unit): Button =
+        KeyboardUi.toolbarButton(this, label).apply { setOnClickListener { action() } }
+
+    @SuppressLint("UnspecifiedRegisterReceiverFlag")
+    private fun registerScreenDecryptReceiver() {
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                if (intent?.action == ScreenDecryptActivity.ACTION_RESULT) {
+                    handleScreenDecryptResult(intent)
+                }
+            }
+        }
+        screenDecryptReceiver = receiver
+        val filter = IntentFilter(ScreenDecryptActivity.ACTION_RESULT)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("DEPRECATION")
+            registerReceiver(receiver, filter)
+        }
+    }
+
+    private fun requestScreenDecrypt() {
+        lastDecryptedText = null
+        lastDecryptedImageUri = null
+        ScreenDecryptStore.clear(this)
+        showDecryptPanel("正在请求屏幕截图权限...")
+        showTransientTargetStatus("解图中")
+        try {
+            startActivity(Intent(this, ScreenDecryptActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            })
+        } catch (e: Exception) {
+            val msg = "解图失败：${e.userMessage()}"
+            showDecryptPanel(msg)
+            toast(msg)
+        }
+    }
+
+    private fun consumePendingScreenDecryptResult() {
+        if (decryptPanel == null || decryptResultView == null) return
+        ScreenDecryptStore.consume(this)?.let { handleScreenDecryptResult(it) }
+    }
+
+    private fun handleScreenDecryptResult(intent: Intent) {
+        if (decryptPanel == null || decryptResultView == null) return
+        ScreenDecryptStore.clear(this)
+        if (!intent.getBooleanExtra(ScreenDecryptActivity.EXTRA_OK, false)) {
+            val msg = intent.getStringExtra(ScreenDecryptActivity.EXTRA_MESSAGE) ?: "解图失败"
+            lastDecryptedText = null
+            lastDecryptedImageUri = null
+            showDecryptPanel(msg)
+            toast(msg)
+            return
+        }
+        val kind = intent.getStringExtra(ScreenDecryptActivity.EXTRA_KIND)
+        if (kind == ScreenDecryptActivity.KIND_IMAGE) {
+            val uri = intent.getStringExtra(ScreenDecryptActivity.EXTRA_IMAGE_URI)?.let(Uri::parse)
+            if (uri == null) {
+                showDecryptPanel("解图失败：图片结果丢失")
+                return
+            }
+            lastDecryptedText = null
+            lastDecryptedImageUri = uri
+            showDecryptPanel(intent.getStringExtra(ScreenDecryptActivity.EXTRA_TEXT) ?: "已解密一张图片", uri)
+        } else {
+            val text = intent.getStringExtra(ScreenDecryptActivity.EXTRA_TEXT).orEmpty()
+            lastDecryptedText = text
+            lastDecryptedImageUri = null
+            showDecryptPanel(text)
+        }
+        showTransientTargetStatus("解密完成")
+    }
+
+    private fun decryptInKeyboard() {
+        clearPinyinBuffer()
+        val input = findDecryptInput()
+        if (input == null) {
+            requestScreenDecrypt()
+            return
+        }
+        showDecryptPanel("正在解密...")
+        toast("解密中")
+        scope.launch {
+            try {
+                val text = withContext(Dispatchers.Default) { decryptInput(input) }
+                lastDecryptedText = text
+                lastDecryptedImageUri = null
+                showDecryptPanel(text)
+                showTransientTargetStatus("解密完成")
+            } catch (e: Exception) {
+                lastDecryptedText = null
+                lastDecryptedImageUri = null
+                val msg = "解密失败：${e.userMessage()}"
+                showDecryptPanel(msg)
+                toast(msg)
+            }
+        }
+    }
+
+    private fun findDecryptInput(): DecryptInput? {
+        decryptPayloadFromCurrentInput()?.let { return DecryptInput.Payload(it) }
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+            ?: return null
+        val clip = clipboard.primaryClip ?: return null
+        val uris = ArrayList<Uri>()
+        for (i in 0 until clip.itemCount) {
+            val item = clip.getItemAt(i) ?: continue
+            item.text?.toString()?.trim()?.takeIf { isWentuyiPayload(it) }?.let {
+                return DecryptInput.Payload(it)
+            }
+            item.coerceToText(this)?.toString()?.trim()?.takeIf { isWentuyiPayload(it) }?.let {
+                return DecryptInput.Payload(it)
+            }
+            item.uri?.let { uris += it }
+        }
+        return if (uris.isNotEmpty()) DecryptInput.Images(uris) else null
+    }
+
+    private fun decryptPayloadFromCurrentInput(): String? {
+        val ic = currentInputConnection ?: return null
+        ic.getSelectedText(0)?.toString()?.trim()?.takeIf { isWentuyiPayload(it) }?.let { return it }
+        return readInputBoxText().trim().takeIf { isWentuyiPayload(it) }
+    }
+
+    private fun decryptInput(input: DecryptInput): String {
+        val payload = when (input) {
+            is DecryptInput.Payload -> input.text
+            is DecryptInput.Images -> {
+                val bitmaps = input.uris.map { BitmapUtils.decodeImportImage(contentResolver, it) }
+                val qrTexts = bitmaps.map { TextImageCodec.readQrText(it) }
+                TextImageCodec.assemblePayloadFromTexts(qrTexts)
+            }
+        }
+        return when (val result = MessageDecryptor.decrypt(this, payload)) {
+            is MessageDecryptor.Result.Success -> {
+                if (result.payload.isText()) result.payload.text()
+                else "已解密一张图片，请用“文图易解密”分享入口查看图片"
+            }
+            is MessageDecryptor.Result.Failure -> throw IllegalArgumentException(result.message)
+        }
+    }
+
+    private fun showDecryptPanel(text: String, imageUri: Uri? = null) {
+        decryptResultView?.text = text
+        if (imageUri == null) {
+            decryptImageView?.visibility = View.GONE
+            decryptImageView?.setImageDrawable(null)
+        } else {
+            decryptImageView?.setImageURI(imageUri)
+            decryptImageView?.visibility = View.VISIBLE
+        }
+        decryptPanel?.visibility = View.VISIBLE
+    }
+
+    private fun hideDecryptPanel() {
+        lastDecryptedText = null
+        lastDecryptedImageUri = null
+        decryptResultView?.text = ""
+        decryptImageView?.setImageDrawable(null)
+        decryptImageView?.visibility = View.GONE
+        decryptPanel?.visibility = View.GONE
+    }
+
+    private fun copyTextToClipboard(text: String) {
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        if (clipboard == null) {
+            toast("无法访问剪贴板")
+            return
+        }
+        clipboard.setPrimaryClip(ClipData.newPlainText("文图易解密文本", text))
+        toast("结果已复制")
+    }
+
+    private fun copyImageToClipboard(uri: Uri) {
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        if (clipboard == null) {
+            toast("无法访问剪贴板")
+            return
+        }
+        clipboard.setPrimaryClip(ClipData.newUri(contentResolver, "文图易解密图片", uri))
+        toast("图片已复制")
+    }
+
+    private fun commitImageToCurrentInput(uri: Uri) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N_MR1) {
+            toast("当前系统不支持写入图片")
+            return
+        }
+        val connection = currentInputConnection ?: run {
+            toast("当前输入框不可写")
+            return
+        }
+        val editorInfo = currentInputEditorInfo ?: run {
+            toast("当前输入框不支持图片")
+            return
+        }
+        val mimeTypes = editorInfo.contentMimeTypes ?: emptyArray()
+        if (!mimeTypes.any { it.equals("image/png", true) || it.equals("image/*", true) }) {
+            toast("当前输入框不支持图片")
+            return
+        }
+        editorInfo.packageName?.let {
+            grantUriPermission(it, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        val info = InputContentInfo(uri, ClipDescription("文图易解密图片", arrayOf("image/png")), null)
+        val ok = connection.commitContent(
+            info,
+            InputConnection.INPUT_CONTENT_GRANT_READ_URI_PERMISSION,
+            Bundle(),
+        )
+        toast(if (ok) "图片已写入" else "图片写入失败")
+    }
+
+    private fun isWentuyiPayload(text: String): Boolean =
+        SecurePayloadCodec.isPayload(text) || text.startsWith(DoubleRatchet.PREFIX_V5)
 
     // ─── Candidate strip ─────────────────────────────────────────────────────
 
@@ -162,6 +502,7 @@ class TextImageImeService : InputMethodService() {
         updateModeChip()
         val container = candidateContainer ?: return
         container.removeAllViews()
+        updateToolStripVisibility()
 
         if (!chineseMode || symbolsLayout || pinyinBuffer.isEmpty()) {
             // Idle strip — like Gboard, blank when not composing pinyin. The 中/英
@@ -197,6 +538,28 @@ class TextImageImeService : InputMethodService() {
             chip.background = KeyboardUi.roundedSelector(this,
                 KeyboardUi.COLOR_TOOLBAR_KEY, KeyboardUi.COLOR_TOOLBAR_PRESSED, 14, Color.TRANSPARENT, 0)
         }
+    }
+
+    private fun updateToolStripVisibility() {
+        val composing = chineseMode && !symbolsLayout && pinyinBuffer.isNotEmpty()
+        val visibility = if (composing) View.GONE else View.VISIBLE
+        for (view in toolStripViews) view.visibility = visibility
+    }
+
+    private fun updateTargetChip() {
+        val chip = targetChip ?: return
+        targetChipReset?.let { uiHandler.removeCallbacks(it) }
+        targetChipReset = null
+        chip.text = currentTargetName()
+        chip.setTextColor(if (sendTargetIndex == 0) KeyboardUi.COLOR_SUBTLE else KeyboardUi.COLOR_ACCENT)
+        chip.background = KeyboardUi.roundedSelector(
+            this,
+            if (sendTargetIndex == 0) KeyboardUi.COLOR_TOOLBAR_KEY else KeyboardUi.COLOR_ACCENT_TINT,
+            if (sendTargetIndex == 0) KeyboardUi.COLOR_TOOLBAR_PRESSED else KeyboardUi.COLOR_ACCENT_TINT_PRESSED,
+            14,
+            if (sendTargetIndex == 0) KeyboardUi.COLOR_STROKE else KeyboardUi.COLOR_ACCENT,
+            1,
+        )
     }
 
     // ─── Keyboard rendering ─────────────────────────────────────────────────
@@ -392,13 +755,19 @@ class TextImageImeService : InputMethodService() {
 
     // ─── Three one-tap send icons ────────────────────────────────────────────
 
-    private fun sendIcon(icon: String, accent: Boolean, onLong: (() -> Unit)? = null,
-                         onClick: () -> Unit): Button =
+    private fun sendAction(
+        label: String,
+        accent: Boolean,
+        contentDescription: String,
+        onLong: (() -> Unit)? = null,
+        onClick: () -> Unit,
+    ): Button =
         Button(this).apply {
-            text = icon
+            text = label
+            this.contentDescription = contentDescription
             isAllCaps = false
             transformationMethod = null
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, if (label.length > 1) 13f else 15f)
             setPadding(0, 0, 0, 0)
             minWidth = 0; minimumWidth = 0
             minHeight = 0; minimumHeight = 0
@@ -410,15 +779,15 @@ class TextImageImeService : InputMethodService() {
             isFocusableInTouchMode = false
             stateListAnimator = null
             if (accent) {
-                setTextColor(KeyboardUi.COLOR_ACCENT)
+                setTextColor(Color.WHITE)
                 background = KeyboardUi.roundedSelector(this@TextImageImeService,
-                    KeyboardUi.COLOR_ACCENT_TINT, KeyboardUi.COLOR_ACCENT_TINT_PRESSED, 12,
-                    KeyboardUi.COLOR_ACCENT, 1)
+                    KeyboardUi.COLOR_ACCENT, KeyboardUi.COLOR_ACCENT_PRESSED, 14,
+                    Color.TRANSPARENT, 0)
             } else {
                 setTextColor(KeyboardUi.COLOR_TEXT)
                 background = KeyboardUi.roundedSelector(this@TextImageImeService,
-                    KeyboardUi.COLOR_TOOLBAR_KEY, KeyboardUi.COLOR_TOOLBAR_PRESSED, 12,
-                    Color.TRANSPARENT, 0)
+                    KeyboardUi.COLOR_TOOLBAR_KEY, KeyboardUi.COLOR_TOOLBAR_PRESSED, 14,
+                    KeyboardUi.COLOR_STROKE, 1)
             }
             setOnClickListener {
                 it.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP)
@@ -427,10 +796,15 @@ class TextImageImeService : InputMethodService() {
             onLong?.let { handler -> setOnLongClickListener { handler(); true } }
         }
 
-    private fun sendIconParams(): LinearLayout.LayoutParams =
-        LinearLayout.LayoutParams(KeyboardUi.dp(this, 50), KeyboardUi.dp(this, 44)).apply {
+    private fun sendActionParams(widthDp: Int): LinearLayout.LayoutParams =
+        LinearLayout.LayoutParams(KeyboardUi.dp(this, widthDp), KeyboardUi.dp(this, 40)).apply {
             leftMargin = KeyboardUi.dp(this@TextImageImeService, 4)
         }
+
+    private fun addToolAction(bar: LinearLayout, button: Button, widthDp: Int) {
+        bar.addView(button, sendActionParams(widthDp))
+        toolStripViews += button
+    }
 
     /** 🖼 — render the input-box text to a plain (unencrypted) PNG and send it.
      *  Long-press toggles anti-OCR mode (readable to humans, noisy to machine OCR). */
@@ -446,7 +820,7 @@ class TextImageImeService : InputMethodService() {
         toast(if (antiOcrMode) "图片模式：防 OCR（明文但防机器识别）" else "图片模式：普通文字图")
     }
 
-    /** 🔒 — encrypt the input-box text and replace it with the WTY3 ciphertext. */
+    /** 🔒 — encrypt the input-box text and replace it with a WTY4 / WTY5 ciphertext. */
     private fun sendCipherText() {
         val text = readInputBoxText()
         if (text.isBlank()) { toast("输入框没有文字，先打字再点"); return }
@@ -460,13 +834,45 @@ class TextImageImeService : InputMethodService() {
         sendController.generateEncryptedImage(text)
     }
 
-    private fun cycleTargetWithToast() {
-        val n = 1 + contacts().size
-        if (n <= 1) {
+    private fun showTargetPicker() {
+        val contactList = contacts()
+        if (contactList.isEmpty()) {
             toast("加密目标：共享密钥（还没有联系人，去主 App 扫码加好友）")
             return
         }
+        val labels = arrayOf("共享密钥") + contactList.map { contactDisplayName(it) }.toTypedArray()
+        sendTargetIndex = sendTargetIndex.coerceIn(0, labels.lastIndex)
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("选择加密目标")
+            .setSingleChoiceItems(labels, sendTargetIndex) { d, which ->
+                sendTargetIndex = which
+                updateTargetChip()
+                toast("加密目标：${currentTargetName()}")
+                d.dismiss()
+            }
+            .setNegativeButton("取消", null)
+            .create()
+        attachToImeWindow(dialog)
+        try {
+            dialog.show()
+        } catch (e: RuntimeException) {
+            cycleTargetFallback()
+        }
+    }
+
+    private fun attachToImeWindow(dialog: AlertDialog) {
+        val token = window.window?.attributes?.token ?: return
+        val dialogWindow = dialog.window ?: return
+        dialogWindow.setType(WindowManager.LayoutParams.TYPE_APPLICATION_ATTACHED_DIALOG)
+        val attrs = dialogWindow.attributes
+        attrs.token = token
+        dialogWindow.attributes = attrs
+    }
+
+    private fun cycleTargetFallback() {
+        val n = 1 + contacts().size
         sendTargetIndex = (sendTargetIndex + 1) % n
+        updateTargetChip()
         toast("加密目标：${currentTargetName()}")
     }
 
@@ -514,6 +920,57 @@ class TextImageImeService : InputMethodService() {
 
     private fun toast(message: String) {
         if (message.isBlank()) return
+        showTransientTargetStatus(message)
         Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
     }
+
+    private fun showTransientTargetStatus(message: String) {
+        val chip = targetChip ?: return
+        targetChipReset?.let { uiHandler.removeCallbacks(it) }
+        val short = compactStatus(message)
+        chip.text = short
+        chip.setTextColor(when {
+            short.contains("失败") || short.contains("不可") || short.contains("变化") -> KeyboardUi.COLOR_DANGER
+            short.startsWith("已") || short.endsWith("中") -> KeyboardUi.COLOR_ACCENT
+            else -> KeyboardUi.COLOR_SUBTLE
+        })
+        chip.background = KeyboardUi.roundedSelector(
+            this,
+            KeyboardUi.COLOR_TOOLBAR_KEY,
+            KeyboardUi.COLOR_TOOLBAR_PRESSED,
+            14,
+            KeyboardUi.COLOR_STROKE,
+            1,
+        )
+        val reset = Runnable { updateTargetChip() }
+        targetChipReset = reset
+        uiHandler.postDelayed(reset, 2200L)
+    }
+
+    private fun compactStatus(message: String): String = when {
+        message.startsWith("正在加密文字") -> "加密中"
+        message.startsWith("正在生成加密二维码") -> "制密图中"
+        message.startsWith("正在生成图片") -> "制图中"
+        message.startsWith("正在生成防 OCR") -> "制图中"
+        message.startsWith("已写入加密文字") -> "已写密文"
+        message.startsWith("已插入加密二维码") -> "已插密图"
+        message.startsWith("已分享加密二维码") -> "已分享密图"
+        message.startsWith("已插入文字图片") -> "已插图片"
+        message.startsWith("已分享文字图片") -> "已分享图片"
+        message.startsWith("输入框没有文字") -> "先输入文字"
+        message.startsWith("当前输入框不可写") -> "不可写"
+        message.startsWith("输入内容已变化") -> "内容变化"
+        message.startsWith("目标已切换") -> "目标切换"
+        message.startsWith("加密失败") -> "加密失败"
+        message.startsWith("解图中") -> "解图中"
+        message.startsWith("解密失败") -> "解密失败"
+        message.startsWith("解密完成") -> "解密完成"
+        message.startsWith("生成失败") -> "生成失败"
+        message.startsWith("写入失败") -> "写入失败"
+        message.startsWith("加密目标") -> currentTargetName()
+        else -> message.take(6)
+    }
+
+    private fun Exception.userMessage(): String =
+        message?.takeIf { it.isNotBlank() } ?: this::class.java.simpleName
 }

@@ -17,8 +17,11 @@ import java.nio.charset.StandardCharsets
  * Runs the repo-level canonical vectors (`protocol-fixtures/vectors.txt`, shipped into the test
  * APK assets) through the codec the app actually ships — now `com.wentuyi.protocol.SecurePayloadCodec`
  * after the P0.2 migration. This is the on-device proof that the shared codec decrypts every frozen
- * payload and rejects header tampering under the real Android runtime (real BouncyCastle Argon2 +
- * AndroidKeyStore-free GCM), complementing :shared-protocol's JVM VectorContractTest.
+ * payload and rejects representative header tampering under the real Android runtime (real
+ * BouncyCastle Argon2 + AndroidKeyStore-free GCM), complementing :shared-protocol's exhaustive
+ * JVM VectorContractTest. The on-device tamper test deliberately uses session-key vectors for each
+ * envelope layout so it can verify Android's GCM AAD binding without spending Argon2 work on every
+ * tamper mutation. Passphrase vectors are still decrypted once by everyVectorDecryptsToItsExpectedPlaintext().
  */
 @RunWith(AndroidJUnit4::class)
 class VectorContractTest {
@@ -42,12 +45,12 @@ class VectorContractTest {
         }
     }
 
-    @Test fun flippingAnyHeaderByteFailsDecryption() {
+    @Test fun representativeSessionHeaderFieldTamperFailsDecryption() {
         val file = loadVectors()
-        for (v in file.vectors) {
+        for (v in representativeTamperVectors(file)) {
             val prefix = v.payload.substring(0, 5)
             val packed = Base64.decode(v.payload.substring(prefix.length), Base64.NO_WRAP)
-            for (i in 0 until v.headerLen) {
+            for (i in representativeHeaderOffsets(v)) {
                 val tampered = packed.copyOf()
                 tampered[i] = (tampered[i].toInt() xor 0x01).toByte()
                 val mutated = prefix + Base64.encodeToString(tampered, Base64.NO_WRAP)
@@ -60,6 +63,42 @@ class VectorContractTest {
             }
         }
     }
+
+    private fun representativeTamperVectors(file: VectorFile): List<VectorFile.Vector> =
+        listOf(
+            requireNotNull(file.vectors.firstOrNull {
+                it.keyMode == "session" && it.payload.startsWith(SecurePayloadCodec.PREFIX_V4)
+            }) { "missing WTY4 session vector" },
+            requireNotNull(file.vectors.firstOrNull {
+                it.keyMode == "session" && it.payload.startsWith(SecurePayloadCodec.PREFIX_V3)
+            }) { "missing WTY3 session vector" },
+        )
+
+    private fun representativeHeaderOffsets(v: VectorFile.Vector): List<Int> =
+        when {
+            v.payload.startsWith(SecurePayloadCodec.PREFIX_V4) -> listOf(
+                0,  // version
+                1,  // type
+                2,  // key mode
+                3,  // Argon memory field / AAD-bound zero in session-key mode
+                7,  // Argon iterations
+                8,  // Argon parallelism
+                9,  // first salt byte
+                24, // last salt byte
+                25, // first IV byte
+                36, // last IV byte
+            )
+            v.payload.startsWith(SecurePayloadCodec.PREFIX_V3) -> listOf(
+                0,  // version
+                1,  // type
+                2,  // key mode
+                3,  // first salt byte
+                18, // last salt byte
+                19, // first IV byte
+                30, // last IV byte
+            )
+            else -> error("${v.name}: unsupported vector prefix")
+        }.filter { it < v.headerLen }
 
     private fun decrypt(file: VectorFile, v: VectorFile.Vector): SecurePayloadCodec.DecryptedPayload =
         when (v.keyMode) {

@@ -30,8 +30,8 @@ Add `Wentuyi` from the IBus input method preferences.
 
 - Type printable ASCII to build the preedit buffer.
 - `Enter`: commit the preedit buffer as plain text.
-- `Ctrl+Shift+E`: encrypt the preedit buffer and commit the `WTY3:` payload.
-- `Ctrl+Shift+D`: decrypt a `WTY3:` preedit buffer and commit plaintext.
+- `Ctrl+Shift+E`: encrypt the preedit buffer and commit the `WTY4:` payload.
+- `Ctrl+Shift+D`: decrypt a `WTY4:` preedit buffer and commit plaintext.
 - `Esc`: clear preedit.
 
 ## Smoke test
@@ -58,12 +58,12 @@ scp desktop-cli/build/distributions/desktop-cli.zip platforms/linux/wentuyi-inse
 ssh user@192.168.10.16 'chmod +x /tmp/ui-rich-smoke.sh /tmp/wentuyi-insert.sh && /tmp/ui-rich-smoke.sh'
 ```
 
-The rich smoke starts Xvfb + openbox, opens a GTK `TextView` with styled prefix/suffix text, and uses `wentuyi-insert.sh` to directly type encrypted text at the current rich-text cursor. It then decrypts the inserted `WTY3:` payload back to plaintext. No clipboard is used.
+The rich smoke starts Xvfb + openbox, opens a GTK `TextView` with styled prefix/suffix text, and uses `wentuyi-insert.sh` to directly type encrypted text at the current rich-text cursor. It then decrypts the inserted `WTY4:` payload back to plaintext. No clipboard is used.
 
 Current verified result:
 
 ```text
-linux-rich-encrypted-prefix=WTY3:
+linux-rich-encrypted-prefix=WTY4:
 linux-rich-decrypted=direct rich
 linux-rich-tags=preserved
 ```

@@ -22,7 +22,7 @@ application {
 }
 
 // Regenerates the canonical protocol vectors consumed by both :shared-protocol and :app
-// tests. Writes protocol-fixtures/vectors.json. Run intentionally — salt/IV are random so
+// tests. Writes protocol-fixtures/vectors.txt. Run intentionally — salt/IV are random so
 // every run rewrites the frozen payloads; re-run both test suites afterwards.
 tasks.register<JavaExec>("generateFixtures") {
     group = "verification"

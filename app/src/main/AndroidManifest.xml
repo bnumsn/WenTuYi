@@ -5,6 +5,8 @@
 
     <!-- Real-time QR scan (camera2). Optional so the IME still installs on camera-less devices. -->
     <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
 
     <queries>
@@ -35,6 +37,13 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+        </activity>
+
+        <activity-alias
+            android:name=".DecryptShareActivity"
+            android:exported="true"
+            android:label="@string/decrypt_share_name"
+            android:targetActivity=".MainActivity">
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -50,7 +59,12 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="text/plain" />
             </intent-filter>
-        </activity>
+            <intent-filter>
+                <action android:name="android.intent.action.PROCESS_TEXT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity-alias>
 
         <activity
             android:name=".OnboardingActivity"
@@ -70,13 +84,24 @@
         <activity
             android:name=".CameraScanActivity"
             android:exported="false"
-            android:screenOrientation="portrait"
             android:label="实时扫码" />
 
         <activity
             android:name=".DecryptActivity"
             android:exported="false"
             android:label="解密接收" />
+
+        <activity
+            android:name=".ScreenDecryptActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:label="屏幕解密"
+            android:theme="@style/ScreenDecryptTheme" />
+
+        <service
+            android:name=".ScreenDecryptService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
 
         <activity
             android:name=".KeyboardTestActivity"

@@ -13,21 +13,21 @@ import android.widget.TextView
 
 /** Visual constants + button-builders shared by the IME input view. */
 object KeyboardUi {
-    const val COLOR_PANEL = 0xFFE8EBF0.toInt()
+    const val COLOR_PANEL = 0xFFF3F5F7.toInt()
     const val COLOR_KEY = 0xFFFFFFFF.toInt()
-    const val COLOR_KEY_PRESSED = 0xFFDADCE0.toInt()
-    const val COLOR_FUNCTION_KEY = 0xFFCFD4DC.toInt()
-    const val COLOR_FUNCTION_PRESSED = 0xFFBEC4CE.toInt()
-    const val COLOR_TOOLBAR_KEY = 0xFFF2F3F5.toInt()
-    const val COLOR_TOOLBAR_PRESSED = 0xFFDEE1E6.toInt()
-    const val COLOR_TEXT = 0xFF202124.toInt()
-    const val COLOR_SUBTLE = 0xFF5F6368.toInt()
-    const val COLOR_ACCENT = 0xFF1A73E8.toInt()
-    const val COLOR_ACCENT_PRESSED = 0xFF1765CA.toInt()
-    const val COLOR_ACCENT_TINT = 0xFFE3F2FD.toInt()
-    const val COLOR_ACCENT_TINT_PRESSED = 0xFFBBDEFB.toInt()
+    const val COLOR_KEY_PRESSED = 0xFFE1E5EA.toInt()
+    const val COLOR_FUNCTION_KEY = 0xFFDCE2EA.toInt()
+    const val COLOR_FUNCTION_PRESSED = 0xFFCBD3DD.toInt()
+    const val COLOR_TOOLBAR_KEY = 0xFFFFFFFF.toInt()
+    const val COLOR_TOOLBAR_PRESSED = 0xFFE6EAEE.toInt()
+    const val COLOR_TEXT = 0xFF1F2933.toInt()
+    const val COLOR_SUBTLE = 0xFF637083.toInt()
+    const val COLOR_ACCENT = 0xFF0F766E.toInt()
+    const val COLOR_ACCENT_PRESSED = 0xFF0B5F59.toInt()
+    const val COLOR_ACCENT_TINT = 0xFFE0F2F1.toInt()
+    const val COLOR_ACCENT_TINT_PRESSED = 0xFFB2DFDB.toInt()
     const val COLOR_DANGER = 0xFFC5221F.toInt()
-    const val COLOR_STROKE = 0xFFDADCE0.toInt()
+    const val COLOR_STROKE = 0xFFD3DAE3.toInt()
     const val KEY_HEIGHT_DP = 48
     const val TOOLBAR_HEIGHT_DP = 32
 
@@ -37,10 +37,10 @@ object KeyboardUi {
         button.text = label
         button.setTextColor(COLOR_TEXT)
         button.setTextSize(TypedValue.COMPLEX_UNIT_SP, keyTextSize(label).toFloat())
-        val normal = if (functionKey) COLOR_FUNCTION_KEY else COLOR_KEY
+        val normal = if (functionKey || label == "空格" || label == "space") COLOR_FUNCTION_KEY else COLOR_PANEL
         val pressed = if (functionKey) COLOR_FUNCTION_PRESSED else COLOR_KEY_PRESSED
-        button.background = roundedSelector(ctx, normal, pressed, 7, Color.TRANSPARENT, 0)
-        button.elevation = if (functionKey) 0f else dp(ctx, 1).toFloat()
+        button.background = roundedSelector(ctx, normal, pressed, 8, Color.TRANSPARENT, 0)
+        button.elevation = 0f
         return button
     }
 
@@ -88,7 +88,7 @@ object KeyboardUi {
 
     fun styleActiveKey(ctx: Context, button: Button) {
         button.setTextColor(Color.WHITE)
-        button.background = roundedSelector(ctx, COLOR_ACCENT, COLOR_ACCENT_PRESSED, 7, Color.TRANSPARENT, 0)
+        button.background = roundedSelector(ctx, COLOR_ACCENT, COLOR_ACCENT_PRESSED, 8, Color.TRANSPARENT, 0)
     }
 
     fun styleActiveToolbarKey(ctx: Context, button: Button) {
@@ -103,10 +103,8 @@ object KeyboardUi {
 
     /** Tinted style for the secure-send buttons (密文 / 密图) so they group visually. */
     fun styleSecureToolbarKey(ctx: Context, button: Button) {
-        button.setTextColor(COLOR_ACCENT)
-        button.background = roundedSelector(
-            ctx, COLOR_ACCENT_TINT, COLOR_ACCENT_TINT_PRESSED, 16, COLOR_ACCENT, 1
-        )
+        button.setTextColor(Color.WHITE)
+        button.background = roundedSelector(ctx, COLOR_ACCENT, COLOR_ACCENT_PRESSED, 14, Color.TRANSPARENT, 0)
     }
 
     fun keyParams(ctx: Context, leftDp: Int, weight: Float): LinearLayout.LayoutParams =

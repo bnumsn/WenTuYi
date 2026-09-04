@@ -157,7 +157,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "wentuyi encrypted insert failed" }
     Start-Sleep -Milliseconds 800
     $encrypted = Copy-FocusedText
-    if (-not $encrypted.StartsWith("WTY3:")) { throw "unexpected encrypted text: $encrypted" }
+    if (-not $encrypted.StartsWith("WTY4:")) { throw "unexpected encrypted text: $encrypted" }
 
     [System.Windows.Forms.SendKeys]::SendWait("{BACKSPACE}")
     Start-Sleep -Milliseconds 300
@@ -168,7 +168,7 @@ try {
     if ($decrypted -ne "thunderbird mail rich") { throw "unexpected decrypted text: $decrypted" }
 
     @(
-        "windows-thunderbird-encrypted-prefix=WTY3:",
+        "windows-thunderbird-encrypted-prefix=WTY4:",
         "windows-thunderbird-decrypted=thunderbird mail rich"
     ) | Out-File -LiteralPath $OutPath -Encoding UTF8
     exit 0

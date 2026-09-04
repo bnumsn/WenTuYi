@@ -30,7 +30,7 @@ cat >"$COMPONENT" <<XML
   <name>org.freedesktop.IBus.Wentuyi</name>
   <description>Wentuyi UI test input</description>
   <exec>/usr/bin/env WENTUYI_CLI=$CLI WENTUYI_PASSPHRASE=$PASSPHRASE WENTUYI_IBUS_BUS_NAME=org.freedesktop.IBus.Wentuyi WENTUYI_IBUS_LOG=/tmp/wentuyi-ibus.log python3 $ENGINE --ibus</exec>
-  <version>0.5.1</version>
+  <version>0.6.0</version>
   <author>Wentuyi</author>
   <license>MIT</license>
   <textdomain>ibus-wentuyi</textdomain>
@@ -171,10 +171,10 @@ ENC=""
 for _ in $(seq 1 140); do
     sleep 0.1
     ENC=$(cat "$RESULT")
-    case "$ENC" in WTY3:*) break;; esac
+    case "$ENC" in WTY4:*) break;; esac
 done
 printf "%s" "$ENC" >/tmp/wentuyi-ui-encrypted.txt
-case "$ENC" in WTY3:*) ;; *) echo "not encrypted: $ENC" >&2; exit 3;; esac
+case "$ENC" in WTY4:*) ;; *) echo "not encrypted: $ENC" >&2; exit 3;; esac
 
 xdotool key ctrl+a BackSpace
 sleep 0.2

@@ -15,8 +15,8 @@ typealias RatchetState = ProtoDR.State
  *   • forwards the crypto, converting the app's [KeyExchange.Identity] at the boundary, and
  *   • (de)serializes [RatchetState] as JSON for [WentuyiSettings].
  *
- * The JSON schema is byte-for-byte the one shipped before the migration, so ratchet sessions
- * already persisted on a user's device keep decoding unchanged.
+ * The JSON schema is append-only: `epoch` was added in v0.6.1 and defaults to 0 when absent,
+ * so ratchet sessions already persisted on a user's device keep decoding unchanged.
  */
 object DoubleRatchet {
     const val PREFIX_V5 = ProtoDR.PREFIX_V5
@@ -24,14 +24,21 @@ object DoubleRatchet {
     fun isInitiator(selfIdentityPub: ByteArray, peerIdentityPub: ByteArray): Boolean =
         ProtoDR.isInitiator(selfIdentityPub, peerIdentityPub)
 
-    fun initialRootKey(selfIdentity: KeyExchange.Identity, peerIdentityPub: ByteArray): ByteArray =
-        ProtoDR.initialRootKey(selfIdentity.toProto(), peerIdentityPub)
+    fun newEpoch(): Long = ProtoDR.newEpoch()
 
-    fun initAlice(rootKey: ByteArray, peerIdentityPub: ByteArray): RatchetState =
-        ProtoDR.initAlice(rootKey, peerIdentityPub)
+    fun peekEpoch(payload: String?): Long? = ProtoDR.peekEpoch(payload)
 
-    fun initBob(rootKey: ByteArray, selfIdentity: KeyExchange.Identity): RatchetState =
-        ProtoDR.initBob(rootKey, selfIdentity.toProto())
+    fun initialRootKey(
+        selfIdentity: KeyExchange.Identity,
+        peerIdentityPub: ByteArray,
+        epoch: Long,
+    ): ByteArray = ProtoDR.initialRootKey(selfIdentity.toProto(), peerIdentityPub, epoch)
+
+    fun initSender(rootKey: ByteArray, peerIdentityPub: ByteArray, epoch: Long): RatchetState =
+        ProtoDR.initSender(rootKey, peerIdentityPub, epoch)
+
+    fun initReceiver(rootKey: ByteArray, selfIdentity: KeyExchange.Identity, epoch: Long): RatchetState =
+        ProtoDR.initReceiver(rootKey, selfIdentity.toProto(), epoch)
 
     fun encrypt(state: RatchetState, plaintext: ByteArray): String = ProtoDR.encrypt(state, plaintext)
 
@@ -41,6 +48,7 @@ object DoubleRatchet {
 
     fun serialize(s: RatchetState): String {
         val o = JSONObject()
+        o.put("epoch", s.epoch)
         o.put("rk", b64(s.rk))
         o.put("dhsPub", b64(s.dhsPub))
         o.put("dhsPriv", b64(s.dhsPriv))
@@ -60,6 +68,9 @@ object DoubleRatchet {
         val sk = o.getJSONObject("skipped")
         for (k in sk.keys()) skipped[k] = unb64(sk.getString(k))
         return RatchetState(
+            // Pre-epoch rows decode as 0, so the first epoch-carrying message from the peer
+            // is strictly newer and re-bootstraps the session instead of failing forever.
+            epoch = o.optLong("epoch", 0L),
             rk = unb64(o.getString("rk")),
             dhsPub = unb64(o.getString("dhsPub")),
             dhsPriv = unb64(o.getString("dhsPriv")),

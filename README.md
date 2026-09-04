@@ -1,27 +1,29 @@
 # 文图易
 
-文图易是一个 Android 输入法 + 跨平台加密协议工具集。当前版本 (v0.5.2 / **WTY3**) 在 Android 内置软键盘上提供普通输入、文字转普通图片、加密文字、加密二维码；仓库同时提供 JVM 共享协议层、Windows/Linux CLI、Apple 输入法外壳代码，用于让非 Android 平台先互通同一套 `WTY3` / `WTYID1` / `WTYB1` / `WTYP1` 协议。v0.5 系列引入了基于 X25519 公钥的"扫码加好友"端到端加密通道，作为旧版本"共享密钥"模式的安全升级。
+文图易是一个 Android 输入法 + 跨平台加密协议工具集。当前版本 (v0.6.1 / **WTY4 + WTY5**) 在 Android 内置软键盘上提供普通输入、文字转普通图片、加密文字、加密二维码；仓库同时提供 JVM 共享协议层和 Windows/Linux CLI，让桌面端与 Android 互通同一套 `WTY4` / `WTY5` / `WTYID1` / `WTYB1` / `WTYP1` 协议，并保留 `WTY1`-`WTY3` 兼容解密。v0.5 系列引入了基于 X25519 公钥的"扫码加好友"端到端加密通道，v0.6 系列进一步引入联系人消息的 Double Ratchet 前向保密。
+
+**各平台成熟度不一样，按这个读**：Android 是完整产品；Windows/Linux 是**协议 CLI + 输入桥**（能收发全部 WTY1–5，但不是系统输入法）；`platforms/apple` 目前**只有 UI 外壳、没有密码学实现**（`WentuyiCryptoBackend` 是个空 protocol），iOS/macOS 还不能用。
 
 ## 当前范围
 
 - Android 原生 IME 是当前完整产品实现；除 `com.google.zxing:core` 与 `org.bouncycastle:bcprov-jdk18on` 两个**纯 Java**库外不引入 AndroidX。
 - `shared-protocol` 是纯 JVM 协议核心，供桌面 CLI 和后续平台外壳复用。
-- `desktop-cli` 提供 Windows/Linux 可运行命令行，用于加密、解密、身份、SAS、会话密钥和 QR 分片 smoke test。
-- `platforms/apple` 提供 iOS Keyboard Extension / macOS InputMethodKit 的 Swift Package 外壳；平台受限能力见 [docs/CROSS_PLATFORM.md](docs/CROSS_PLATFORM.md)。
+- `desktop-cli` 提供 Windows/Linux 可运行命令行：加密、解密、身份、SAS、会话密钥、**WTY5 双棘轮**（`ratchet-init` / `ratchet-encrypt` / `ratchet-decrypt` / `ratchet-info`，会话存于 `--state` 文件）和 QR 分片。Android 默认对已验证联系人发 WTY5，桌面端因此必须支持它，否则"验证得越认真越收不到消息"。
+- `platforms/apple` 只是 iOS Keyboard Extension / macOS InputMethodKit 的 Swift 外壳，**尚未接入任何密码学实现**，不可用于真实通信；平台受限能力见 [docs/CROSS_PLATFORM.md](docs/CROSS_PLATFORM.md)。
 - `platforms/linux/ibus` 提供 Linux IBus 输入法入口；`platforms/windows/wentuyi-hotkey.ps1` 提供 Windows 登录会话里的全局热键输入桥。
 - Kotlin 1.9 + Coroutines；Java 17。
 - 系统输入法服务：`TextImageImeService`（由 `KeyboardUi` + `SendController` 组合而成）。
 - 键盘模式：像普通键盘一样直接写入当前输入框，支持 `中/En` 在中文拼音和英文直输间切换。
 - 中文输入：字母进入拼音候选栏，点候选或按空格上屏首选词；退格优先删拼音缓冲。
-- 键盘动作：候选栏右侧提供普通文字图片、加密文字、加密二维码三个入口；动作会读取当前输入框文字或选中文本。加密文字在加密成功后替换选中文本/当前输入框内容；图片优先 `commitContent`，失败后走系统分享面板 fallback。长按加密入口可切换共享密钥或联系人会话密钥。
+- 键盘动作：候选栏右侧提供普通文字图片、加密文字、加密二维码三个入口；动作会读取当前输入框文字或选中文本。加密文字在加密成功后替换选中文本/当前输入框内容；图片优先 `commitContent`，失败后走系统分享面板 fallback。长按加密入口可用单选菜单切换共享密钥或联系人会话密钥。
 - 输入法视觉接近 Gboard 的 Material 键盘样式。
-- Debug 构建提供"键盘本地测试"页，用于验证 `图` / `密图` 不经过社交应用也能插入图片。
+- Debug 构建提供"键盘本地测试"页，用于验证 `图` / `密图` 不经过社交应用也能插入图片；debug 包还提供仅用于自动化的 `.KeyboardTestDebugActivity` alias，可用 `adb shell am start -n com.wentuyi.app/.KeyboardTestDebugActivity` 远程启动，release 不包含该 alias。
 - 加密算法：**AES-256-GCM** + 12 字节随机 IV + 16 字节随机 salt + **Argon2id** 派生密钥；当前默认输出 **WTY4** envelope（Argon2id m=64 MiB / t=4 / p=1，**参数写入 header** 以便后续平滑调参）。版本/类型/密钥模式/Argon 参数/salt/IV 全部作为 AAD 绑定到密文，防篡改与类型混淆。解密时对 header 里的 Argon 参数做范围 clamp（防止恶意密文用超大 m 触发 OOM）。仍兼容解密 v3（WTY3，m=32/t=3）及 v1/v2 的 PBKDF2-HmacSHA256 旧密文。
 - 加密图传输：**Reed-Solomon 纠错的标准 QR Code**（ZXing, ECC 级 H），替换了旧版易被 JPEG 压缩破坏的自研 `WTYBW2` 黑白栅格；长 payload 由文图易自有的 `WTYP1|id|N|T|chunk` 文本包装拆分到多张 QR，接收方按序号重组。
 - 身份与密钥：
   - 主 App 可生成 X25519 身份码（公钥 + 名字打包成单张 QR），通过"扫码 / 导入二维码"添加联系人；
   - 双方扫到对方身份码后会显示 8 位 **SAS 校验码**，建议口头核对一致以防中间人；
-  - 联系人列表保存于 `WentuyiSettings`（私钥由 Android Keystore-resident AES-GCM 包裹）。
+  - 联系人列表与身份私钥都由 Android Keystore-resident AES-GCM 包裹后存入私有 SharedPreferences。联系人表加密不是为了保密（对方公钥本就不是秘密），而是为了**完整性**：公钥 + `verified` 标记合起来就是全部信任根，能改写这个文件的人可以换掉公钥并置为已验证，而 SAS 是按被换掉的公钥算的、看不出异常。读取失败时**硬失败**，绝不退化成"空联系人列表"。
 - 旧"共享密钥"路径保留兼容；密钥读取失败时**硬失败**，不再回流明文。
 
 ## 项目结构
@@ -39,10 +41,8 @@ app/src/main/java/com/wentuyi/app/
   DecryptActivity.kt          # 处理 ACTION_SEND / 选图 / 剪贴板解密
   KeyboardTestActivity.java   # Debug 本地测试页（保留 Java）
 
-  SecurePayloadCodec.kt       # WTY3 加密；兼容 v1/v2 解密
-  KeyExchange.kt              # X25519 keypair + ECDH + SAS + 联系人 JSON
+  KeyExchange.kt              # Android 身份 / 联系人存储 glue，协议实现委托 shared-protocol
   WentuyiSettings.kt          # 共享密钥 + 身份私钥的 Keystore 包裹存储
-  CryptoUtils.kt              # Argon2id / HKDF / Base32 helpers
   TextImageCodec.kt           # QR encode/decode + multi-QR 拆分
   ImageStore.kt               # 缓存 PNG 写入 + 24h LRU 清理
   ImageContentProvider.kt     # content:// 提供者；query 支持 _data / MIME_TYPE
@@ -51,7 +51,8 @@ app/src/main/java/com/wentuyi/app/
 
 shared-protocol/
   src/main/kotlin/com/wentuyi/protocol/
-    SecurePayloadCodec.kt     # JVM WTY1/WTY2/WTY3 文本协议
+    SecurePayloadCodec.kt     # JVM WTY1-4 envelope；WTY4 当前默认输出
+    DoubleRatchet.kt          # JVM WTY5 Double Ratchet
     KeyExchange.kt            # JVM X25519 身份、备份码、SAS
     PayloadChunks.kt          # JVM WTYP1 文本分片
 
@@ -64,21 +65,24 @@ platforms/
   windows/                    # PowerShell CLI wrapper + hotkey bridge + package smoke
 ```
 
-## 加密格式 (WTY3)
+## 加密格式 (WTY4 / WTY5)
 
 > 完整线上格式（WTY1–5 envelope、WTYID1/WTYB1/WTYP1、Double Ratchet 设计、SAS、安全边界）见 [docs/PROTOCOL.md](docs/PROTOCOL.md)——跨平台实现者对照文档。
 
-文本载荷形如 `WTY3:` + Base64(header || ciphertext)。Header 31 字节：
+当前共享密钥 / 会话密钥载荷形如 `WTY4:` + Base64(header || ciphertext)。Header 37 字节：
 
 | 偏移 | 大小 | 含义 |
 |---|---|---|
-| 0  | 1  | 版本号 = `0x03` |
+| 0  | 1  | 版本号 = `0x04` |
 | 1  | 1  | 类型 (1=文本, 2=图像, 3=分页图像, 4=图像分片) |
 | 2  | 1  | 密钥模式 (0=Argon2id passphrase, 1=HKDF-SHA256 over 32-byte session key) |
-| 3  | 16 | salt |
-| 19 | 12 | IV |
+| 3  | 4  | Argon2id memory KB (uint32 BE；session-key 模式为 0) |
+| 7  | 1  | Argon2id iterations（session-key 模式为 0） |
+| 8  | 1  | Argon2id parallelism（session-key 模式为 0） |
+| 9  | 16 | salt |
+| 25 | 12 | IV |
 
-整段 header 作为 GCM AAD，AES-256-GCM 输出包含 16 字节认证标签。
+整段 header 作为 GCM AAD，AES-256-GCM 输出包含 16 字节认证标签。已验证联系人发送时优先使用 `WTY5:` Double Ratchet；响应方尚未收到首条 WTY5 前会回退到 WTY4 session-key 路径，并在 UI 中提示本条暂无 PFS。
 
 X25519 公钥交换：双方扫描对方身份码后通过 ECDH 得到 32 字节 shared secret，再用 HKDF-SHA256（salt = 排序拼接的两公钥）派生会话密钥；该密钥直接以"模式 1"喂给同一份 `SecurePayloadCodec`。`KeyExchange.shortAuthString` 用 HKDF 派生出 8 位 SAS 供双方口头核对。
 
@@ -86,12 +90,33 @@ X25519 公钥交换：双方扫描对方身份码后通过 ECDH 得到 32 字节
 
 跨平台版本规划和状态见 [docs/CROSS_PLATFORM.md](docs/CROSS_PLATFORM.md)。Android 是完整 IME；非 Android 平台当前先提供协议 CLI 和平台输入法外壳。
 
+CI（`.github/workflows/ci.yml`）在每次 push 上跑两条流水线：**协议核心**（`:shared-protocol:test` + `:desktop-cli:build` + `scripts/cli-smoke.sh`）和 **Android**（`assembleDebug` + `assembleDebugAndroidTest` + `lintDebug`）。需要真机的 `connectedDebugAndroidTest` 仍由人工触发（见下）。
+
+本地跑协议核心（纯 JVM，几十秒）：
+
+```bash
+./gradlew :shared-protocol:test
+./scripts/cli-smoke.sh          # 用真实 CLI 走两个身份：WTY4 / WTY5 / 乱序 / 失步恢复 / QR 分片
+```
+
 桌面协议 CLI：
 
 ```bash
 ./gradlew :desktop-cli:installDist
 desktop-cli/build/install/desktop-cli/bin/desktop-cli help
 ```
+
+WTY5 棘轮（桌面端与 Android 已验证联系人互通所必需）：
+
+```bash
+CLI=desktop-cli/build/install/desktop-cli/bin/desktop-cli
+export WENTUYI_BACKUP=WTYB1-...                    # 你的备份码，别放进 argv
+$CLI ratchet-init --peer-public <对方公钥B64URL> --state ~/.wentuyi/peer.state
+$CLI ratchet-encrypt --state ~/.wentuyi/peer.state "要发的话"
+$CLI ratchet-decrypt --peer-public <对方公钥B64URL> --state ~/.wentuyi/peer.state 'WTY5:...'
+```
+
+只需一方 `ratchet-init`；另一方首次 `ratchet-decrypt` 会从密文里的 epoch 自动自举。`--state` 文件含私钥材料，写入时置 0600。
 
 Linux 远程 smoke：
 
@@ -129,7 +154,7 @@ Release 构建启用 R8 压缩混淆：
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-设备端 smoke test（覆盖 v3 加密、ECDH 对称、QR 经 JPEG 重压缩后仍可解码、多 QR 拆分重组、ImageStore/ImageContentProvider 读回等）：
+设备端 smoke test（覆盖 WTY4 加密、WTY5 棘轮、ECDH 对称、QR 经 JPEG 重压缩后仍可解码、多 QR 拆分重组、ImageStore/ImageContentProvider 读回等）：
 
 ```bash
 ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest
@@ -155,12 +180,13 @@ adb shell ime set com.wentuyi.app/.TextImageImeService
 - 静态保护：AES-256-GCM AEAD + Argon2id（WTY4 默认 m=64 MiB / t=4 / p=1，参数写入 header 并 clamp），header 作 GCM AAD 绑定 version/type/key-mode/argon 参数/salt/IV。
 - 身份认证：X25519 公钥指纹（SHA-256[..8] Base32）+ 8 位 HKDF SAS 供双方口外核对。
 - 端到端：会话密钥由双方公钥 ECDH 后 HKDF-SHA256 派生；不经任何服务器。
-- **前向保密 (PFS)**：v0.6 起，发给**已验证联系人的加密文本**默认走 **WTY5 Double Ratchet**（Signal 式双棘轮）——私钥泄漏后已发出的历史消息无法被回溯解密，且具破后向恢复。
+- **前向保密 (PFS)**：v0.6 起，发给**已验证联系人的加密文本和加密二维码**默认走 **WTY5 Double Ratchet**（Signal 式双棘轮）——私钥泄漏后已发出的历史消息无法被回溯解密，且具破后向恢复。
 
 **⚠ PFS 的适用范围与限制**
 - **有 PFS**：已验证联系人的**加密文本与加密二维码**（均走 WTY5 棘轮）。
 - **暂无 PFS**：① 旧「共享密钥」路径；② 棘轮**首条消息**——接收方首次回复前（或响应方在收到首条前回退 WTY4 的消息），链含长期身份密钥成分，对方回复后完整生效（同 Signal 无 prekey 时）。
 - 棘轮会话状态以 Keystore 包裹存于本机；身份私钥仍是信任根，**务必抄写身份备份码并离线保管**。
+- **会话失步是可恢复的**（v0.6.1）：WTY5 header 带 8 字节会话 epoch。任一方重装 / 清数据 / 用备份码换机后，对端收到**更新的 epoch** 会自动重新自举；若失步的是自己，在「密钥管理 → 重置加密会话」开一个新 epoch 再发一条消息即可，对方无需操作。旧 epoch 的密文会被拒绝，不能被重放进新会话。
 
 **其他已知限制**：
 - QR Code 解码已能容忍 JPEG q=80 的重压缩（smoke test 覆盖），但极低质量 (q≤40)、严重裁剪、二次摄屏仍可能失败 — 真机逐项验证微信/QQ/钉钉/飞书/Telegram/WhatsApp 的实际表现，并补充兼容性矩阵。
@@ -168,14 +194,18 @@ adb shell ime set com.wentuyi.app/.TextImageImeService
 - v0.6 起新增 `CameraScanActivity` 实时摄像头扫码（`android.hardware.camera2` + ZXing 自实现，不引入 CameraX/AndroidX）：预览后台线程从 Y 平面解码首个 QR，文本交回 `ScanActivity.routeScannedTexts` 统一路由。⚠ 该路径依赖真实摄像头，未纳入 CI/instrumentation 自动化，需真机对二维码逐项实测。仍保留相册/图片选择器导入。
 - Debug 构建保留默认 passphrase 仅用于开发体验；Release 构建必须先保存身份码或共享密钥。
 - X25519 私钥目前仅靠 Keystore-wrapped SharedPreferences 保护；可考虑直接用 `KeyProperties.KEY_ALGORITHM_EC` 的硬件支持密钥（API 31+）。
+- 解密产物的落盘窗口：解密出的**明文图片**写入应用私有缓存，10 分钟后清理（密文/待分享图仍为 24 小时）；屏幕解密的**明文文本只存在于进程内存**，不落盘，进程结束即消失。
+- 桌面 CLI 没有 Keystore：`--state` 棘轮会话文件与 `WENTUYI_BACKUP` 备份码都是明文私钥材料。会话文件写入时置 0600（Windows 无 POSIX 权限时不生效），但桌面端的密钥保护整体仍弱于 Android。
+- **这是"可被识别"的加密**：一大段 `WTY5:` Base64 或一张纯二维码在聊天流里非常显眼，平台无需解密即可识别、标记或限流。协议强度挡不住"此人在用加密工具"这条元信息本身。
 
 ## 版本兼容
 
+- v5 (`WTY5:`) header 在 v0.6.1 由 40 字节增至 48 字节（前置 8 字节会话 epoch）。WTY5 从未随 release 构建发布过（此前最后一个 release 是 v0.5.1），因此**不保留旧 40 字节 header 的解析**；升级前若有开发中的棘轮会话，双方各自「重置加密会话」即可。
 - v4 (`WTY4:`) 是当前默认输出格式（Argon2 参数写入 header，可平滑调参）。
 - v3 (`WTY3:`) 仍可被解密（旧版默认；Argon2 m=32/t=3 硬编码）。
 - v2 (`WTY2:`) 与 v1 (`WTY1:`) 文本载荷仍可被解密（PBKDF2 路径保留）。
-- v2 自研的 `WTYBW2 / Dense / Grid` 黑白加密图**不再支持读取**（自研栅格不可救药），如有历史图片请用 v0.2 解密导出明文后用 v3 重新加密。
-- v0.4 身份备份码 (64 字节) 与 v0.5 备份码 (68 字节 + CRC32) 都可被 v0.5 恢复。
+- v2 自研的 `WTYBW2 / Dense / Grid` 黑白加密图**不再支持读取**（自研栅格不可救药），如有历史图片请用 v0.2 解密导出明文后用 v0.6 重新加密。
+- v0.4 身份备份码 (64 字节) 与 v0.5+ 备份码 (68 字节 + CRC32) 都可被当前版本恢复。
 
 ## v0.5 修复了 v0.4 留下的隐患
 
@@ -189,9 +219,9 @@ adb shell ime set com.wentuyi.app/.TextImageImeService
 8. **目标选择只能循环点击** — 改为 AlertDialog 单选菜单，多联系人时可直接定位。
 9. **Onboarding 缺心智模型** — 末步弹"私钥丢失 = 永久失联 / 泄漏 = 被冒充"全屏强警告。
 10. **PFS 缺乏告知** — README、Onboarding、备份对话框三处明示"无前向保密"。
-11. **Argon2id m=32 MiB / t=3 偏弱** — 保留当前参数（OWASP 2023 下限），等 v0.6 引入 v4 envelope 时一并升级到 m=64 / t=4 并把参数写入 header。
+11. **Argon2id m=32 MiB / t=3 偏弱** — v0.6 已引入 WTY4 envelope，默认升级到 m=64 MiB / t=4 / p=1，并把参数写入 header。
 
-## v0.5.2 修复（Codex + Claude 联合评审）
+## v0.5.2 / v0.6 修复（Codex + Claude 联合评审）
 
 1. **联系人加密静默降级为共享密钥** — `resolveSendTarget` 在所选联系人消失或身份私钥不可读时会悄悄回落到共享密钥加密。现改为 **fail-closed**：返回 `SendTarget.Unavailable` 并拒绝发送，提示用户重新选择目标，绝不把"发给已验证联系人"降级成"人人可解"。
 2. **加密二维码走分享 fallback 时原明文残留输入框** — `SendController.deliverImages` 仅在 `commitContent` 成功路径清空原文；现在分享路径也会先清空匹配的明文，分享失败再恢复，杜绝误发明文。
@@ -201,4 +231,13 @@ adb shell ime set com.wentuyi.app/.TextImageImeService
 6. **shared-protocol 与 app 协议解析不一致** — shared 版现在同样解包/校验 `WTYIPG1` 分页与 `WTYICH1` 分片，并补齐对应编码器，跨平台行为统一（新增 round-trip 测试）。
 7. **身份备份码复制到剪贴板** — 复制后 60s 自动清除（仅当剪贴板内容仍是该备份码时），减少被剪贴板嗅探的窗口。
 8. **legacy WTY2/WTY1 type 字节未认证** — 属旧格式固有限制（无 AAD），无法在不破坏既有密文的前提下补认证；仅影响兼容解密路径（类型混淆/DoS，非伪造），已在代码注释中明确标注。v3 已通过 AAD 绑定彻底关闭。
-9. **无前向保密 (PFS)** — 设计限制，需 Double Ratchet，维持在 v0.6 路线图，本次未改动。
+9. **无前向保密 (PFS)** — 已在 v0.6 引入 WTY5 Double Ratchet；共享密钥、WTY4 session-key fallback 与棘轮首条消息仍无 PFS，UI 会提示适用范围。
+
+## v0.6.1 修复（全仓评审）
+
+1. **棘轮会话失步后永久失联，且无恢复路径** — 任一方重装 / 清数据 / 用备份码换机后本地棘轮状态丢失，会从同一个确定性根密钥重启，而对端根密钥早已推进：此后双向每条消息都 AEAD 失败且**永不恢复**，双方还分不清这和"消息损坏"。唯一出路是两人同时删好友重加，而 UI 从没提示过。现在 WTY5 header 前置 8 字节**会话 epoch**（header 40 → 48 字节）：收到更新的 epoch 自动重新自举，收到已退休的 epoch 拒绝（防旧会话密文重放进活会话），另加「密钥管理 → 重置加密会话」供自己失步时主动开新会话。协议层、app 持久化层与 CLI 三处都有覆盖测试。
+2. **联系人列表明文存储** — 公钥 + `verified` 标记是全部信任根（SAS 就是按存下来的公钥算的），却是 SharedPreferences 里的裸 JSON：能写这个文件的人可以换公钥、置已验证，完成无声中间人。现在与身份私钥同样用 Keystore AES-GCM 包裹，篡改会在 GCM tag 上失败；读取失败**硬失败**，不退化成空列表。旧的明文列表首次读取时自动迁移。
+3. **桌面端收不到 Android 发的棘轮消息** — Android 对已验证联系人默认发 WTY5，而 desktop-cli 只实现到 WTY4，"验证得越认真越用不了"。现补齐 `ratchet-init` / `ratchet-encrypt` / `ratchet-decrypt` / `ratchet-info`，会话存于 `--state` 文件（0600），失步恢复规则与 Android 一致。
+4. **没有 CI** — 加 `.github/workflows/ci.yml`：协议核心单测 + CLI 端到端冒烟 + Android 编译/lint。另加 `scripts/cli-smoke.sh`，用真实 CLI 二进制跑 13 项断言（SAS 双向一致、WTY4 中文往返、错误密钥拒绝、会话密钥、棘轮双向、乱序、失步恢复、旧 epoch 重放拒绝、QR 分片重组）。
+5. **解密明文的落盘窗口** — 屏幕解密的明文文本原本写进 SharedPreferences，无人消费就一直留在磁盘上；改为仅存进程内存，进程结束即消失。解密出的明文图片从 24 小时缩短到 10 分钟（密文/待分享图仍 24 小时），并在解密入口主动清扫。
+6. **文档与实际不符** — `platforms/apple` 只有 UI 外壳、没有密码学实现，README 曾把它写得像可用；`protocol-fixtures/README.md` 还在说 codec 被实现了两次（app 侧副本早已删除）。均已改正，并在开头加了各平台成熟度说明。

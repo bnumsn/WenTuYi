@@ -133,7 +133,7 @@ try {
     Send-KeyChord "^a" 100
     Send-RegisteredHotkey 0x45 9000
     $encrypted = Read-EditorText
-    if (-not $encrypted.StartsWith("WTY3:")) { throw "encrypt hotkey did not produce WTY3 payload: $encrypted" }
+    if (-not $encrypted.StartsWith("WTY4:")) { throw "encrypt hotkey did not produce WTY4 payload: $encrypted" }
 
     Replace-EditorText $encrypted
     Send-KeyChord "^a" 100
@@ -141,7 +141,7 @@ try {
     $decrypted = Read-EditorText
     if ($decrypted -ne "windows ui") { throw "decrypt hotkey mismatch: $decrypted" }
 
-    $lines.Add("windows-ui-encrypted-prefix=WTY3:")
+    $lines.Add("windows-ui-encrypted-prefix=WTY4:")
     $lines.Add("windows-ui-decrypted=$decrypted")
     $lines | Out-File -LiteralPath $OutPath -Encoding UTF8
     exit 0

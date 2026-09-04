@@ -129,11 +129,40 @@ object WentuyiSettings {
 
     // ─── Contacts (peer X25519 public keys) ───────────────────────────────────
 
-    fun getContactsJson(context: Context): String =
-        prefs(context).getString(KEY_CONTACTS_JSON, null) ?: "[]"
+    /**
+     * The contact list is Keystore-wrapped like every other long-lived secret — not for
+     * confidentiality (peer public keys aren't secret) but for **integrity**. This blob
+     * holds each peer's public key and their `verified` flag, which together are the entire
+     * trust root: the SAS the two users compared out-of-band is computed *from* the stored
+     * public key, so anyone who can rewrite this file can swap in their own key, set
+     * `verified`, and the app will happily encrypt to them with no visible change. Wrapping
+     * it in AES-GCM means such an edit fails the tag instead of being trusted.
+     *
+     * Fails closed: an unreadable blob throws rather than degrading to "no contacts", so a
+     * tampered or truncated list can never be silently replaced by an attacker-supplied one.
+     */
+    fun getContactsJson(context: Context): String {
+        val prefs = prefs(context)
+        val stored = prefs.getString(KEY_CONTACTS_JSON, null) ?: return "[]"
+        if (!stored.startsWith(ENCRYPTED_PREFIX) && !stored.startsWith(LEGACY_ENCRYPTED_PREFIX)) {
+            // Pre-v0.6.1 plaintext list. Adopt it once, then re-store it wrapped. Best-effort:
+            // a Keystore failure here must not lock the user out of their own contacts.
+            runCatching { putKeystoreString(prefs, KEY_CONTACTS_JSON, stored) }
+            return stored
+        }
+        return try {
+            decryptKeystoreString(stored)
+        } catch (e: Exception) {
+            throw IllegalStateException("联系人列表读取失败（可能已被篡改），请重新扫码添加联系人", e)
+        }
+    }
 
     fun setContactsJson(context: Context, json: String) {
-        prefs(context).edit().putString(KEY_CONTACTS_JSON, json).apply()
+        try {
+            putKeystoreString(prefs(context), KEY_CONTACTS_JSON, json)
+        } catch (e: GeneralSecurityException) {
+            throw IllegalStateException("联系人列表保存失败", e)
+        }
     }
 
     // ─── Per-contact Double Ratchet state (Keystore-wrapped, keyed by fingerprint) ──

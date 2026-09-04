@@ -29,7 +29,7 @@ import kotlinx.coroutines.withContext
 import java.security.GeneralSecurityException
 
 /**
- * Decrypts incoming WTY3 / legacy payloads received via:
+ * Decrypts incoming WTY4 / WTY5 / legacy payloads received via:
  *   • ACTION_SEND / ACTION_SEND_MULTIPLE forwarded from another app,
  *   • the system clipboard,
  *   • image-picker selection (e.g. multiple QR pages from one message).
@@ -50,6 +50,8 @@ class DecryptActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Sweep any decrypted-plaintext PNG whose short TTL has expired.
+        ImageStore.pruneNow(this)
         buildUi()
         handleIncomingIntent(intent)
     }
@@ -80,8 +82,8 @@ class DecryptActivity : Activity() {
         }
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(22), dp(18), dp(22), dp(22))
         }
+        SystemBarPadding.apply(root, dp(22), dp(18), dp(22), dp(22))
         scroll.addView(root, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 

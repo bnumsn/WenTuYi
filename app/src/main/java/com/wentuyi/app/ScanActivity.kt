@@ -82,8 +82,8 @@ class ScanActivity : Activity() {
         }
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(22), dp(18), dp(22), dp(22))
         }
+        SystemBarPadding.apply(root, dp(22), dp(18), dp(22), dp(22))
         scroll.addView(root, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 
