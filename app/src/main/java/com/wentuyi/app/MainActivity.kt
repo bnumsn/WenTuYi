@@ -34,9 +34,11 @@ class MainActivity : Activity() {
 
     private lateinit var statusView: TextView
     private lateinit var clipboardDecryptButton: Button
+    private lateinit var keyboardBanner: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Palette.refresh(this)
         // Sweep any decrypted-plaintext PNG whose short TTL has expired.
         ImageStore.pruneNow(this)
         // First-launch tutorial — runs once. Share intents (ACTION_SEND/MULTIPLE) still
@@ -64,7 +66,48 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         refreshStatus()
+        refreshKeyboardBanner()
         refreshClipboardShortcut()
+    }
+
+    /** true when 文图易键盘 appears in the system's enabled-IME list. */
+    private fun isKeyboardEnabled(): Boolean = runCatching {
+        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+            ?: return@runCatching false
+        imm.enabledInputMethodList.any { it.packageName == packageName }
+    }.getOrDefault(false)
+
+    /** true when it is also the keyboard currently in use. */
+    private fun isKeyboardSelected(): Boolean = runCatching {
+        Settings.Secure.getString(contentResolver, Settings.Secure.DEFAULT_INPUT_METHOD)
+            ?.startsWith("$packageName/") == true
+    }.getOrDefault(false)
+
+    private fun refreshKeyboardBanner() {
+        val enabled = isKeyboardEnabled()
+        val selected = isKeyboardSelected()
+        if (enabled && selected) {
+            keyboardBanner.visibility = View.GONE
+            return
+        }
+        keyboardBanner.visibility = View.VISIBLE
+        val (message, action) = if (!enabled) {
+            "⚠ 文图易键盘尚未启用 —— 在任何聊天 App 里都用不了加密按钮。点这里去开启。" to
+                { startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS)) }
+        } else {
+            "文图易键盘已启用，但当前用的不是它。点这里切换。" to
+                {
+                    (getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager)
+                        ?.showInputMethodPicker()
+                    Unit
+                }
+        }
+        keyboardBanner.text = message
+        keyboardBanner.setTextColor(if (!enabled) Palette.danger else Palette.warn)
+        keyboardBanner.background = KeyboardUi.roundedSelector(
+            this, Palette.card, Palette.surface, 10,
+            if (!enabled) Palette.danger else Palette.warn, 1)
+        keyboardBanner.setOnClickListener { action() }
     }
 
     private fun forwardIfDecryptIntent(intent: Intent?) {
@@ -94,7 +137,7 @@ class MainActivity : Activity() {
     private fun buildUi() {
         val scroll = ScrollView(this).apply {
             isFillViewport = true
-            setBackgroundColor(Color.rgb(247, 248, 243))
+            setBackgroundColor(Palette.surface)
         }
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -105,7 +148,17 @@ class MainActivity : Activity() {
 
         root.addView(textView("文图易", 30f, true), matchWrap())
 
-        statusView = textView("", 14f, false).apply { setTextColor(Color.rgb(95, 102, 90)) }
+        // Keyboard state, first thing on the page. Onboarding checks this properly but the
+        // hub never did, so a user who later switched keyboards away — or who skipped a
+        // setup step — saw nothing wrong and simply concluded the app didn't work. The
+        // banner is only shown when something is actually off, and it fixes it in one tap.
+        keyboardBanner = textView("", 14f, false).apply {
+            visibility = View.GONE
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+        }
+        root.addView(keyboardBanner, matchWrapWithTop(12))
+
+        statusView = textView("", 14f, false).apply { setTextColor(Palette.textSubtle) }
         root.addView(statusView, matchWrapWithTop(8))
 
         clipboardDecryptButton = Button(this).apply {
@@ -152,7 +205,8 @@ class MainActivity : Activity() {
             val identity = KeyExchange.loadIdentity(this)
             val hasPassphrase = WentuyiSettings.hasSavedPassphrase(this)
             val pieces = ArrayList<String>()
-            if (identity != null) pieces += "身份码：${identity.fingerprint}"
+            // The fingerprint alone told the user nothing; label what it is for.
+            if (identity != null) pieces += "身份码已生成（指纹 ${identity.fingerprint}）"
             if (hasPassphrase) pieces += "共享密钥已设置"
             if (pieces.isEmpty() && WentuyiSettings.isUsingDefaultPassphrase(this))
                 pieces += "当前使用开发默认密钥"
@@ -213,7 +267,7 @@ class MainActivity : Activity() {
     private fun textView(text: String, sizeSp: Float, bold: Boolean): TextView =
         TextView(this).apply {
             this.text = text
-            setTextColor(Color.rgb(21, 24, 18))
+            setTextColor(Palette.textPrimary)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, sizeSp)
             if (bold) setTypeface(typeface, android.graphics.Typeface.BOLD)
         }

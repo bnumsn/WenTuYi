@@ -14,7 +14,8 @@
 - Kotlin 1.9 + Coroutines；Java 17。
 - 系统输入法服务：`TextImageImeService`（由 `KeyboardUi` + `SendController` 组合而成）。
 - 键盘模式：像普通键盘一样直接写入当前输入框，支持 `中/En` 在中文拼音和英文直输间切换。
-- 中文输入：字母进入拼音候选栏，点候选或按空格上屏首选词；退格优先删拼音缓冲。
+- 中文输入：字母进入拼音候选栏，点候选或按空格上屏首选词；退格优先删拼音缓冲。词库为 `assets/pinyin.txt`（416 个音节 / 每音节最多 24 字 / 约 4.1 万词，按语料词频排序），由 `scripts/gen-pinyin-table.py` 从 pypinyin + jieba（均 MIT）生成并提交入库，构建与 CI 都不依赖 Python。
+- 界面跟随系统深色模式（`Palette` + `values-night/`，不引入 AppCompat）；横屏自动压缩行高；底部安全区取真实 `WindowInsets` 而非固定值。
 - 键盘动作：候选栏右侧提供普通文字图片、加密文字、加密二维码三个入口；动作会读取当前输入框文字或选中文本。加密文字在加密成功后替换选中文本/当前输入框内容；图片优先 `commitContent`，失败后走系统分享面板 fallback。长按加密入口可用单选菜单切换共享密钥或联系人会话密钥。
 - 输入法视觉接近 Gboard 的 Material 键盘样式。
 - Debug 构建提供"键盘本地测试"页，用于验证 `图` / `密图` 不经过社交应用也能插入图片；debug 包还提供仅用于自动化的 `.KeyboardTestDebugActivity` alias，可用 `adb shell am start -n com.wentuyi.app/.KeyboardTestDebugActivity` 远程启动，release 不包含该 alias。
@@ -33,7 +34,8 @@ app/src/main/java/com/wentuyi/app/
   TextImageImeService.kt      # IME service shell (~350 行)
   KeyboardUi.kt               # 键盘按钮工厂 + 主题
   SendController.kt           # 发送动作 + commit/share fallback + 目标漂移防护
-  PinyinCandidates.java       # 拼音词表（保留 Java，无逻辑变动）
+  PinyinEngine.kt             # 拼音查询：assets/pinyin.txt + 前缀匹配 + DP 整句分词
+  Palette.kt                  # 浅色/深色两套配色（无 AndroidX，靠 uiMode 解析）
 
   MainActivity.kt             # 主 App hub
   KeyManagementActivity.kt    # 身份码 + 联系人 + 共享密钥
@@ -232,6 +234,19 @@ adb shell ime set com.wentuyi.app/.TextImageImeService
 7. **身份备份码复制到剪贴板** — 复制后 60s 自动清除（仅当剪贴板内容仍是该备份码时），减少被剪贴板嗅探的窗口。
 8. **legacy WTY2/WTY1 type 字节未认证** — 属旧格式固有限制（无 AAD），无法在不破坏既有密文的前提下补认证；仅影响兼容解密路径（类型混淆/DoS，非伪造），已在代码注释中明确标注。v3 已通过 AAD 绑定彻底关闭。
 9. **无前向保密 (PFS)** — 已在 v0.6 引入 WTY5 Double Ratchet；共享密钥、WTY4 session-key fallback 与棘轮首条消息仍无 PFS，UI 会提示适用范围。
+
+## v0.6.2 修复（UI/UX 评审）
+
+1. **拼音引擎无法用于中文输入**（最严重）—— 旧词表是手写的 435 条、每音节仅 1–3 个候选，而**正确的字往往根本不在表里**：`jin` 下没有「今」、`bei` 下没有「北」、`wen` 下没有「问」，于是 `wojintianyaochuqu` 出「我进天要出去」，且整句只给一个候选、无从修正。这直接击穿了"把加密做进输入法、不用切 App"的产品前提——用户打不出中文就会切回原键盘，加密功能也一起切走。现改为 `assets/pinyin.txt`：416 个音节（普通话全部）、每音节最多 24 字、约 4.1 万词，全部按语料词频排序；查询顺序改为「整词 → 本音节单字 → 前缀词 → 整句分词」，并把贪心最长匹配换成按块数罚分的 DP 分词。实测：`wojintianyaochuqu` → 我今天要出去，`womingtianqubeijing` → 我明天去北京，`womenyiqichifan` → 我们一起吃饭。
+2. **没有深色模式** —— 主题写死 `Theme.Material.Light`，键盘 15 个颜色常量全是浅色硬编码，活动里另有 29 处 `Color.rgb(...)` 字面量。深色微信上弹出一块纯白键盘是键盘类应用最被诟病的缺陷，而这个 App 按定位就在暗处使用。新增 `Palette` + `values-night/`，两套配色的 9 组前景/背景对比度**均已核算 ≥ 4.5:1**（顺带把沿用的警告色 `#B4641F` 调深到 `#A55916`，原值只有 4.00:1）。图片与二维码生成刻意**不**跟随主题——否则深色下会产出深底图片、二维码对比度失控。
+3. **关键触控目标低于 48dp** —— 工具条与解密面板按钮 32dp、候选词 42dp、目标 chip 40dp，全部抬到 48dp。解密面板的「写入/复制/关闭」恰是整个流程最关键的一刻。
+4. **解密结果被截断成 3 行且无法展开** —— 改为可滚动、限高，长消息不必复制出去才能读全。
+5. **无障碍基本不可用** —— 全部按键补 `contentDescription`（标点按名读而非读字形），模式切换、解密结果、发送状态改为 `announceForAccessibility` 播报。键盘按钮本就不可获焦（IME 不能抢焦点），此前这意味着读屏用户完全收不到反馈。
+6. **完全没有横屏适配** —— 横屏时行高压缩到 72%，不再让键盘吃掉整块屏幕。
+7. **底部安全区硬编码 34dp** —— 改为读真实 `WindowInsets` 的导航栏 inset，三键导航设备与平板不再有死区。
+8. **主页看不出键盘是否启用** —— 新增状态横幅：未启用/未选中时置顶提示并一键跳转。此前用户换过键盘回来，主页毫无提示，只会得出"这 App 坏了"。
+9. **反馈双通道与术语过重** —— Toast 从 26 处收敛为仅"需要注意"的消息（失败/拒绝/目标变更），常规确认只走键盘内的状态 chip，不再遮挡输入区；引导第三步从"X25519 公钥 / 前向保密 (Double Ratchet) / 棘轮首条消息"改写为可执行的白话，密码学细节留在密钥管理和备份对话框里。
+10. **字母键与面板同色** —— `COLOR_KEY` 定义了却从未被引用，字母键一直用面板色绘制，键位没有可见边界。已改用 `COLOR_KEY`。
 
 ## v0.6.1 修复（全仓评审）
 

@@ -1,0 +1,8 @@
+<resources>
+    <!-- Dark counterparts of values/colors.xml. Greens are lightened rather than inverted:
+         #207A59 on a near-black ground falls below 3:1 and reads as muddy. -->
+    <color name="wty_surface">#121410</color>
+    <color name="wty_panel">#1D201A</color>
+    <color name="wty_accent">#4FBF93</color>
+    <color name="wty_accent_dark">#3AA87D</color>
+</resources>

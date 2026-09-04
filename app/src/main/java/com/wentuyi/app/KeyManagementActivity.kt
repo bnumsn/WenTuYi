@@ -48,6 +48,7 @@ class KeyManagementActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Palette.refresh(this)
         buildUi()
         refresh()
     }
@@ -61,7 +62,7 @@ class KeyManagementActivity : Activity() {
     private fun buildUi() {
         val scroll = ScrollView(this).apply {
             isFillViewport = true
-            setBackgroundColor(Color.rgb(247, 248, 243))
+            setBackgroundColor(Palette.surface)
         }
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -164,14 +165,14 @@ class KeyManagementActivity : Activity() {
             nameRow.addView(TextView(this).apply {
                 text = contact.name
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
-                setTextColor(Color.rgb(21, 24, 18))
+                setTextColor(Palette.textPrimary)
             }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
             nameRow.addView(TextView(this).apply {
                 text = if (contact.verified) "✓ 已验证" else "未验证"
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
                 setTextColor(
-                    if (contact.verified) Color.rgb(32, 122, 89)
-                    else Color.rgb(180, 100, 0)
+                    if (contact.verified) Palette.accent
+                    else Palette.warn
                 )
             }, LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
@@ -507,14 +508,14 @@ class KeyManagementActivity : Activity() {
 
     private fun heading(text: String): TextView = TextView(this).apply {
         this.text = text
-        setTextColor(Color.rgb(21, 24, 18))
+        setTextColor(Palette.textPrimary)
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
         setTypeface(typeface, android.graphics.Typeface.BOLD)
     }
 
     private fun subtle(text: String): TextView = TextView(this).apply {
         this.text = text
-        setTextColor(Color.rgb(95, 102, 90))
+        setTextColor(Palette.textSubtle)
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
     }
 

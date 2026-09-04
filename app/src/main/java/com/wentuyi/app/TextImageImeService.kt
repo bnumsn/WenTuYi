@@ -76,6 +76,7 @@ class TextImageImeService : InputMethodService() {
     private var modeChip: TextView? = null
     private var targetChip: TextView? = null
     private val toolStripViews = ArrayList<View>()
+    private var compactRowsApplied = false
     private var lastDecryptedText: String? = null
     private var lastDecryptedImageUri: Uri? = null
 
@@ -103,11 +104,26 @@ class TextImageImeService : InputMethodService() {
     private companion object {
         /** Cap for getTextBefore/AfterCursor — large enough for any realistic message. */
         const val MAX_FIELD_CHARS = 100_000
-        const val BOTTOM_SYSTEM_SAFE_AREA_DP = 34
+        /**
+         * Fallback bottom padding when the real inset can't be read. The old code always
+         * used a hard-coded 34dp, which is dead space on a 3-button-navigation device or a
+         * tablet and can be short of the gesture bar on a tall phone; [applyBottomInset]
+         * now measures it and only falls back to this.
+         */
+        const val BOTTOM_SYSTEM_SAFE_AREA_DP = 20
     }
 
     override fun onCreate() {
         super.onCreate()
+        Palette.refresh(this)
+        KeyboardUi.setCompactRows(isLandscape())
+        // ~700 KB of pinyin table. Parsing it on the main thread would stall the very first
+        // keypress, so load it in the background and repaint the candidate strip when it
+        // lands; until then candidatesFor() returns empty and raw pinyin still commits.
+        scope.launch {
+            withContext(Dispatchers.Default) { PinyinEngine.load(this@TextImageImeService) }
+            if (pinyinBuffer.isNotEmpty()) refreshCandidates()
+        }
         registerScreenDecryptReceiver()
         contactsPrefsListener = WentuyiSettings.watchContactsChanges(this) {
             cachedContacts = null
@@ -125,6 +141,7 @@ class TextImageImeService : InputMethodService() {
                 KeyboardUi.dp(context, 4), KeyboardUi.dp(context, BOTTOM_SYSTEM_SAFE_AREA_DP))
             setBackgroundColor(KeyboardUi.COLOR_PANEL)
         }
+        applyBottomInset(root)
 
         // ── Candidate strip: [中/英] [candidates…] [target] [图] [密文] [密图] ──
         val bar = LinearLayout(this).apply {
@@ -138,13 +155,14 @@ class TextImageImeService : InputMethodService() {
             setOnClickListener { toggleLanguageMode() }
         }
         bar.addView(modeChip, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.WRAP_CONTENT, KeyboardUi.dp(this, 44)))
+            LinearLayout.LayoutParams.WRAP_CONTENT, KeyboardUi.candidateStripHeight(this)))
 
         candidateContainer = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        bar.addView(candidateContainer, LinearLayout.LayoutParams(0, KeyboardUi.dp(this, 44), 1f))
+        bar.addView(candidateContainer, LinearLayout.LayoutParams(
+            0, KeyboardUi.candidateStripHeight(this), 1f))
 
         targetChip = TextView(this).apply {
             gravity = Gravity.CENTER
@@ -157,7 +175,7 @@ class TextImageImeService : InputMethodService() {
             setOnLongClickListener { showTargetPicker(); true }
         }
         bar.addView(targetChip, LinearLayout.LayoutParams(
-            KeyboardUi.dp(this, 88), KeyboardUi.dp(this, 40)).apply {
+            KeyboardUi.dp(this, 88), KeyboardUi.candidateStripHeight(this)).apply {
             leftMargin = KeyboardUi.dp(this@TextImageImeService, 4)
         })
         toolStripViews += targetChip!!
@@ -185,6 +203,52 @@ class TextImageImeService : InputMethodService() {
         updateToolStripVisibility()
         consumePendingScreenDecryptResult()
         return root
+    }
+
+    /**
+     * Night mode and rotation both change how the input view must be built (colours,
+     * row heights), and neither can be patched in place, so the view is rebuilt. Guarded on
+     * an actual change so an unrelated config change doesn't throw away a live keyboard.
+     */
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        val themeFlipped = Palette.refresh(this)
+        val landscape = isLandscape()
+        if (themeFlipped || landscape != compactRowsApplied) {
+            compactRowsApplied = landscape
+            KeyboardUi.setCompactRows(landscape)
+            setInputView(onCreateInputView())
+        }
+    }
+
+    private fun isLandscape(): Boolean =
+        resources.configuration.orientation ==
+            android.content.res.Configuration.ORIENTATION_LANDSCAPE
+
+    /**
+     * Pads the input view by the real navigation-bar inset rather than a fixed guess.
+     * `rootWindowInsets` is only meaningful once attached, hence the attach listener.
+     */
+    private fun applyBottomInset(root: View) {
+        fun bottomPx(): Int {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                root.rootWindowInsets?.let {
+                    return it.getInsets(android.view.WindowInsets.Type.navigationBars()).bottom
+                }
+            } else {
+                @Suppress("DEPRECATION")
+                root.rootWindowInsets?.let { return it.systemWindowInsetBottom }
+            }
+            return KeyboardUi.dp(this, BOTTOM_SYSTEM_SAFE_AREA_DP)
+        }
+        fun apply() {
+            root.setPadding(root.paddingLeft, root.paddingTop, root.paddingRight, bottomPx())
+        }
+        if (root.isAttachedToWindow) apply()
+        root.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+            override fun onViewAttachedToWindow(v: View) = apply()
+            override fun onViewDetachedFromWindow(v: View) = Unit
+        })
     }
 
     override fun onStartInput(attribute: EditorInfo?, restarting: Boolean) {
@@ -231,11 +295,17 @@ class TextImageImeService : InputMethodService() {
                 KeyboardUi.COLOR_TOOLBAR_KEY, KeyboardUi.COLOR_TOOLBAR_KEY, 8,
                 KeyboardUi.COLOR_STROKE, 1)
         }
+        // Scrollable, not clipped. This used to be maxLines=3 + ellipsize, so a message
+        // longer than three lines could not be read at all without copying it out — at the
+        // exact moment the app finally delivers its payoff. Height is capped so the panel
+        // can't push the keys off screen; beyond that the text scrolls.
         decryptResultView = TextView(this).apply {
             setTextColor(KeyboardUi.COLOR_TEXT)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
-            maxLines = 3
-            ellipsize = TextUtils.TruncateAt.END
+            setTextIsSelectable(false)
+            movementMethod = android.text.method.ScrollingMovementMethod()
+            isVerticalScrollBarEnabled = true
+            maxHeight = KeyboardUi.dp(context, if (compactRowsApplied) 64 else 108)
             text = ""
         }
         panel.addView(decryptResultView, KeyboardUi.matchWrap())
@@ -274,13 +344,34 @@ class TextImageImeService : InputMethodService() {
         actions.addView(panelButton("关闭") { hideDecryptPanel() },
             KeyboardUi.toolbarParams(this, 6, 1f))
         panel.addView(actions, KeyboardUi.matchWrapWithTop(this, 6))
+        panel.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
 
         decryptPanel = panel
         return panel
     }
 
     private fun panelButton(label: String, action: () -> Unit): Button =
-        KeyboardUi.toolbarButton(this, label).apply { setOnClickListener { action() } }
+        KeyboardUi.toolbarButton(this, label).apply {
+            contentDescription = when (label) {
+                "写入" -> "把解密结果写入当前输入框"
+                "复制" -> "复制解密结果"
+                "关闭" -> "关闭解密面板"
+                else -> label
+            }
+            setOnClickListener { action() }
+        }
+
+    /**
+     * Speaks [message] to TalkBack. Keyboard buttons are deliberately non-focusable (an IME
+     * must not steal focus from the edited field), which also means a screen reader never
+     * narrates what the keyboard just did — mode switches, decrypt results and send status
+     * were all silent. Announcing from the input view restores that channel.
+     */
+    private fun announce(message: String) {
+        if (message.isBlank()) return
+        val host = decryptPanel ?: keyboardContainer ?: return
+        host.announceForAccessibility(message)
+    }
 
     @SuppressLint("UnspecifiedRegisterReceiverFlag")
     private fun registerScreenDecryptReceiver() {
@@ -510,8 +601,9 @@ class TextImageImeService : InputMethodService() {
             return
         }
 
-        val real = PinyinCandidates.candidatesFor(pinyinBuffer).filter { it != pinyinBuffer }
+        val real = PinyinEngine.candidatesFor(pinyinBuffer).filter { it != pinyinBuffer }
         val rawButton = KeyboardUi.rawPinyinButton(this, pinyinBuffer).apply {
+            contentDescription = "按原样上屏拼音字母 $pinyinBuffer"
             setOnClickListener { commitRawPinyin() }
         }
         val rawWeight = if (real.isEmpty()) 6.0f else 0.9f
@@ -519,6 +611,8 @@ class TextImageImeService : InputMethodService() {
         real.take(6).forEachIndexed { idx, candidate ->
             val button = KeyboardUi.candidateButton(this, candidate).apply {
                 if (idx == 0) KeyboardUi.styleFirstCandidate(this@TextImageImeService, this)
+                contentDescription =
+                    if (idx == 0) "首选候选 $candidate，按空格上屏" else "候选 ${idx + 1} $candidate"
                 setOnClickListener { commitPinyinCandidate(candidate) }
             }
             container.addView(button, KeyboardUi.candidateParams(this, 4, 1.0f))
@@ -527,6 +621,8 @@ class TextImageImeService : InputMethodService() {
 
     private fun updateModeChip() {
         val chip = modeChip ?: return
+        chip.contentDescription =
+            if (chineseMode) "当前中文拼音输入，点按切换到英文" else "当前英文直输，点按切换到中文拼音"
         if (chineseMode) {
             chip.text = "中"
             chip.setTextColor(Color.WHITE)
@@ -551,6 +647,7 @@ class TextImageImeService : InputMethodService() {
         targetChipReset?.let { uiHandler.removeCallbacks(it) }
         targetChipReset = null
         chip.text = currentTargetName()
+        chip.contentDescription = "当前加密目标：${currentTargetName()}，点按更换"
         chip.setTextColor(if (sendTargetIndex == 0) KeyboardUi.COLOR_SUBTLE else KeyboardUi.COLOR_ACCENT)
         chip.background = KeyboardUi.roundedSelector(
             this,
@@ -635,11 +732,33 @@ class TextImageImeService : InputMethodService() {
         LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
 
     private fun keyButton(label: String, value: String): Button =
-        KeyboardUi.keyboardButton(this, label, false).apply { setOnClickListener { handleTextKey(value) } }
+        KeyboardUi.keyboardButton(this, label, false).apply {
+            contentDescription = keyDescription(label)
+            setOnClickListener { handleTextKey(value) }
+        }
+
+    /**
+     * TalkBack reads a key's label, which is fine for letters but useless for punctuation —
+     * "⌫" and "@" get announced as their raw glyph or skipped entirely. Naming them keeps
+     * the keyboard navigable by ear.
+     */
+    private fun keyDescription(label: String): String = when (label) {
+        "⌫" -> "退格"
+        "⇧" -> "上档"
+        "↵" -> "回车"
+        "123" -> "切换到数字符号"
+        "ABC" -> "切换到字母"
+        "@" -> "at 符号"; "#" -> "井号"; "$" -> "美元符号"; "_" -> "下划线"
+        "&" -> "和号"; "-" -> "减号"; "+" -> "加号"; "(" -> "左括号"; ")" -> "右括号"
+        "/" -> "斜杠"; "*" -> "星号"; "\"" -> "双引号"; "'" -> "单引号"
+        ":" -> "冒号"; ";" -> "分号"; "!" -> "感叹号"; "?" -> "问号"
+        else -> label
+    }
 
     private fun controlKey(label: String, active: Boolean = false, action: () -> Unit): Button {
         val button = KeyboardUi.keyboardButton(this, label, true)
         if (active) KeyboardUi.styleActiveKey(this, button)
+        button.contentDescription = keyDescription(label) + if (active) "，已启用" else ""
         button.setOnClickListener { action() }
         return button
     }
@@ -686,6 +805,7 @@ class TextImageImeService : InputMethodService() {
     }
 
     private fun toggleLanguageMode() {
+        announce(if (chineseMode) "已切换到英文直输" else "已切换到中文拼音")
         pinyinBuffer = ""
         chineseMode = !chineseMode
         symbolsLayout = false
@@ -695,7 +815,7 @@ class TextImageImeService : InputMethodService() {
 
     private fun commitFirstPinyinCandidate(): Boolean {
         if (pinyinBuffer.isEmpty()) return false
-        writeTextToActiveTarget(PinyinCandidates.firstCandidateOrRaw(pinyinBuffer))
+        writeTextToActiveTarget(PinyinEngine.firstCandidateOrRaw(pinyinBuffer))
         clearPinyinBuffer()
         return true
     }
@@ -918,11 +1038,26 @@ class TextImageImeService : InputMethodService() {
     private fun contactDisplayName(contact: KeyExchange.Contact): String =
         if (contact.verified) contact.name else "${contact.name}（未验证）"
 
+    /**
+     * Status feedback. The target chip is the primary channel — it sits inside the keyboard,
+     * needs no dismissal and covers nothing. A Toast from an IME floats over the very field
+     * the user is typing into, so it is now reserved for messages that actually need
+     * attention (failures, refusals, target changes); routine "已写密文" confirmations stay
+     * in the chip. Everything is announced for TalkBack either way.
+     */
     private fun toast(message: String) {
         if (message.isBlank()) return
         showTransientTargetStatus(message)
-        Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+        announce(message)
+        if (needsAttention(message)) {
+            Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+        }
     }
+
+    private fun needsAttention(message: String): Boolean =
+        message.contains("失败") || message.contains("不可") || message.contains("没有") ||
+            message.contains("变化") || message.contains("请先") || message.contains("过大") ||
+            message.contains("未") || message.contains("无法") || message.contains("已切换")
 
     private fun showTransientTargetStatus(message: String) {
         val chip = targetChip ?: return

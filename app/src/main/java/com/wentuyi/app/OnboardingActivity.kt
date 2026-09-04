@@ -63,6 +63,7 @@ class OnboardingActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Palette.refresh(this)
         buildUi()
         refreshChecks()
     }
@@ -77,7 +78,7 @@ class OnboardingActivity : Activity() {
     private fun buildUi() {
         val scroll = ScrollView(this).apply {
             isFillViewport = true
-            setBackgroundColor(Color.rgb(247, 248, 243))
+            setBackgroundColor(Palette.surface)
         }
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -106,8 +107,11 @@ class OnboardingActivity : Activity() {
         }
 
         step3Check = stepRow(root,
-            "③  生成你的身份码（X25519 公钥）",
-            "用于安全加好友。生成后到「我的身份码 / 共享密钥」让对方扫码，双方核对 8 位校验码就能开始端到端加密通信。\n\n✓ 发给已验证联系人的加密文本和二维码会优先使用前向保密 (Double Ratchet)；共享密钥和棘轮首条消息暂无 PFS。",
+            "③  生成你的身份码",
+            // First-run screens are not the place for X25519 / Double Ratchet / PFS. The
+            // user needs to know what to do and what is at stake; the cryptography is
+            // spelled out in 密钥管理 and the backup dialog, where it is actionable.
+            "身份码就是你的加密身份。生成后让对方扫一下，双方核对屏幕上那 8 位数字一致，就能开始只有你俩能看的通信。\n\n之后请务必在「我的身份码」里抄下备份码：换手机要靠它，丢了就找不回来。",
             "现在生成"
         ) { ensureIdentityGenerated() }
         step3ActionLabel = { stepActionLabel ->
@@ -155,21 +159,21 @@ class OnboardingActivity : Activity() {
             text = title
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
             setTypeface(typeface, android.graphics.Typeface.BOLD)
-            setTextColor(Color.rgb(21, 24, 18))
+            setTextColor(Palette.textPrimary)
         }
         titleRow.addView(titleView,
             LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         val check = TextView(this).apply {
             text = "未完成"
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-            setTextColor(Color.rgb(150, 150, 150))
+            setTextColor(Palette.ghost)
         }
         titleRow.addView(check, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         container.addView(titleRow, matchWrap())
 
         container.addView(subtle(description).apply {
-            setTextColor(Color.rgb(75, 80, 85))
+            setTextColor(Palette.textSubtle)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
         }, matchWrapWithTop(6))
 
@@ -222,10 +226,10 @@ class OnboardingActivity : Activity() {
     private fun markCheck(view: TextView, done: Boolean) {
         if (done) {
             view.text = "✓ 已完成"
-            view.setTextColor(Color.rgb(32, 122, 89))
+            view.setTextColor(Palette.accent)
         } else {
             view.text = "未完成"
-            view.setTextColor(Color.rgb(150, 150, 150))
+            view.setTextColor(Palette.ghost)
         }
     }
 
@@ -286,14 +290,14 @@ class OnboardingActivity : Activity() {
 
     private fun heading(text: String): TextView = TextView(this).apply {
         this.text = text
-        setTextColor(Color.rgb(21, 24, 18))
+        setTextColor(Palette.textPrimary)
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 26f)
         setTypeface(typeface, android.graphics.Typeface.BOLD)
     }
 
     private fun subtle(text: String): TextView = TextView(this).apply {
         this.text = text
-        setTextColor(Color.rgb(95, 102, 90))
+        setTextColor(Palette.textSubtle)
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
     }
 

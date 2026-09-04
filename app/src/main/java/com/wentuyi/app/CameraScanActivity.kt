@@ -64,6 +64,7 @@ class CameraScanActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Palette.refresh(this)
         val root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
         textureView = TextureView(this)
         root.addView(textureView, FrameLayout.LayoutParams(

@@ -25,7 +25,7 @@ import java.io.ByteArrayOutputStream
  *   5. TextImageCodec: encryptedTextAsQr → readQrText → decrypt; JPEG re-compression
  *      tolerance (the property the v2 codec failed).
  *   6. ImageStore + ImageContentProvider readback.
- *   7. PinyinCandidates unchanged.
+ *   7. PinyinEngine loads its asset table and resolves common words.
  *   8. KeyboardTestActivity commitContent path (debug only).
  */
 class WentuyiSmokeInstrumentation : Instrumentation() {
@@ -67,8 +67,9 @@ class WentuyiSmokeInstrumentation : Instrumentation() {
         assertDecryptFails(mangled, passphrase, "v4 AAD tamper rejected")
 
         // 2. Pinyin smoke (Kotlin sees the unchanged Java helper).
-        assertEquals("你好", PinyinCandidates.firstCandidateOrRaw("nihao"), "pinyin nihao")
-        assertEquals("中文", PinyinCandidates.firstCandidateOrRaw("zhongwen"), "pinyin zhongwen")
+        PinyinEngine.load(context)
+        assertEquals("你好", PinyinEngine.firstCandidateOrRaw("nihao"), "pinyin nihao")
+        assertEquals("中文", PinyinEngine.firstCandidateOrRaw("zhongwen"), "pinyin zhongwen")
 
         // 3. WentuyiSettings save/load + restore.
         val previous = runCatching { WentuyiSettings.getPassphrase(context) }.getOrNull()

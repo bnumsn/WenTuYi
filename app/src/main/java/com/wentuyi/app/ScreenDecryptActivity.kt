@@ -36,6 +36,7 @@ class ScreenDecryptActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Palette.refresh(this)
         window.setBackgroundDrawableResource(android.R.color.transparent)
         window.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
         requestScreenCapture()

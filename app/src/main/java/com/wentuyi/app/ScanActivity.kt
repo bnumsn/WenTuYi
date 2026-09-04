@@ -53,6 +53,7 @@ class ScanActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Palette.refresh(this)
         buildUi()
     }
 
@@ -78,7 +79,7 @@ class ScanActivity : Activity() {
     private fun buildUi() {
         val scroll = ScrollView(this).apply {
             isFillViewport = true
-            setBackgroundColor(Color.rgb(247, 248, 243))
+            setBackgroundColor(Palette.surface)
         }
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -89,7 +90,7 @@ class ScanActivity : Activity() {
 
         root.addView(TextView(this).apply {
             text = "扫码 / 导入二维码"
-            setTextColor(Color.rgb(21, 24, 18))
+            setTextColor(Palette.textPrimary)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 22f)
             setTypeface(typeface, android.graphics.Typeface.BOLD)
         }, matchWrap())
@@ -108,7 +109,7 @@ class ScanActivity : Activity() {
         root.addView(preview, matchWrapWithTop(16))
 
         resultView = TextView(this).apply {
-            setTextColor(Color.rgb(21, 24, 18))
+            setTextColor(Palette.textPrimary)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
             setBackgroundColor(Color.WHITE)
             setPadding(dp(14), dp(14), dp(14), dp(14))
@@ -218,7 +219,7 @@ class ScanActivity : Activity() {
 
     private fun subtle(text: String): TextView = TextView(this).apply {
         this.text = text
-        setTextColor(Color.rgb(95, 102, 90))
+        setTextColor(Palette.textSubtle)
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
     }
 

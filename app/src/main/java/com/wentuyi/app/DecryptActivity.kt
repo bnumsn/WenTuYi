@@ -50,6 +50,7 @@ class DecryptActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Palette.refresh(this)
         // Sweep any decrypted-plaintext PNG whose short TTL has expired.
         ImageStore.pruneNow(this)
         buildUi()
@@ -78,7 +79,7 @@ class DecryptActivity : Activity() {
     private fun buildUi() {
         val scroll = ScrollView(this).apply {
             isFillViewport = true
-            setBackgroundColor(Color.rgb(247, 248, 243))
+            setBackgroundColor(Palette.surface)
         }
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -89,7 +90,7 @@ class DecryptActivity : Activity() {
 
         root.addView(TextView(this).apply {
             text = "解密接收"
-            setTextColor(Color.rgb(21, 24, 18))
+            setTextColor(Palette.textPrimary)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 22f)
             setTypeface(typeface, android.graphics.Typeface.BOLD)
         }, matchWrap())
@@ -102,7 +103,7 @@ class DecryptActivity : Activity() {
         root.addView(primaryButton("复制结果") { copyResult() }, matchWrapWithTop(10))
 
         resultView = TextView(this).apply {
-            setTextColor(Color.rgb(21, 24, 18))
+            setTextColor(Palette.textPrimary)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
             minLines = 7
             setPadding(dp(14), dp(14), dp(14), dp(14))
@@ -297,7 +298,7 @@ class DecryptActivity : Activity() {
 
     private fun subtle(text: String): TextView = TextView(this).apply {
         this.text = text
-        setTextColor(Color.rgb(95, 102, 90))
+        setTextColor(Palette.textSubtle)
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
     }
 

@@ -11,25 +11,50 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
 
-/** Visual constants + button-builders shared by the IME input view. */
+/**
+ * Visual constants + button-builders shared by the IME input view.
+ *
+ * Colours delegate to [Palette] so the keyboard follows the system light/dark setting;
+ * they stay `KeyboardUi.COLOR_*` so every call site reads the same as before.
+ */
 object KeyboardUi {
-    const val COLOR_PANEL = 0xFFF3F5F7.toInt()
-    const val COLOR_KEY = 0xFFFFFFFF.toInt()
-    const val COLOR_KEY_PRESSED = 0xFFE1E5EA.toInt()
-    const val COLOR_FUNCTION_KEY = 0xFFDCE2EA.toInt()
-    const val COLOR_FUNCTION_PRESSED = 0xFFCBD3DD.toInt()
-    const val COLOR_TOOLBAR_KEY = 0xFFFFFFFF.toInt()
-    const val COLOR_TOOLBAR_PRESSED = 0xFFE6EAEE.toInt()
-    const val COLOR_TEXT = 0xFF1F2933.toInt()
-    const val COLOR_SUBTLE = 0xFF637083.toInt()
-    const val COLOR_ACCENT = 0xFF0F766E.toInt()
-    const val COLOR_ACCENT_PRESSED = 0xFF0B5F59.toInt()
-    const val COLOR_ACCENT_TINT = 0xFFE0F2F1.toInt()
-    const val COLOR_ACCENT_TINT_PRESSED = 0xFFB2DFDB.toInt()
-    const val COLOR_DANGER = 0xFFC5221F.toInt()
-    const val COLOR_STROKE = 0xFFD3DAE3.toInt()
+    val COLOR_PANEL get() = Palette.kbPanel
+    val COLOR_KEY get() = Palette.kbKey
+    val COLOR_KEY_PRESSED get() = Palette.kbKeyPressed
+    val COLOR_FUNCTION_KEY get() = Palette.kbFunctionKey
+    val COLOR_FUNCTION_PRESSED get() = Palette.kbFunctionPressed
+    val COLOR_TOOLBAR_KEY get() = Palette.kbToolbarKey
+    val COLOR_TOOLBAR_PRESSED get() = Palette.kbToolbarPressed
+    val COLOR_TEXT get() = Palette.kbText
+    val COLOR_SUBTLE get() = Palette.kbSubtle
+    val COLOR_ACCENT get() = Palette.kbAccent
+    val COLOR_ACCENT_PRESSED get() = Palette.kbAccentPressed
+    val COLOR_ACCENT_TINT get() = Palette.kbAccentTint
+    val COLOR_ACCENT_TINT_PRESSED get() = Palette.kbAccentTintPressed
+    val COLOR_DANGER get() = Palette.kbDanger
+    val COLOR_STROKE get() = Palette.kbStroke
+    val COLOR_ON_ACCENT get() = Palette.kbOnAccent
+
     const val KEY_HEIGHT_DP = 48
-    const val TOOLBAR_HEIGHT_DP = 32
+    /**
+     * 48dp is Android's minimum touch target. The tool strip and the decrypt panel's
+     * 写入/复制/关闭 used to be 32dp — and the decrypt panel is exactly the moment the user
+     * most needs to hit the right button. Landscape shrinks these; see [compactRows].
+     */
+    const val TOOLBAR_HEIGHT_DP = 48
+    const val CANDIDATE_HEIGHT_DP = 48
+
+    /**
+     * Landscape has roughly half the vertical room, and a keyboard sized for portrait
+     * covers the conversation it is being used to reply to. Every row height is scaled by
+     * this instead of being duplicated in a values-land resource, because the whole input
+     * view is built in code.
+     */
+    @Volatile private var compactRows = false
+
+    fun setCompactRows(compact: Boolean) { compactRows = compact }
+
+    private fun rowHeight(dp: Int): Int = if (compactRows) maxOf(36, (dp * 0.72f).toInt()) else dp
 
     fun keyboardButton(ctx: Context, label: String, functionKey: Boolean): Button {
         val button = Button(ctx)
@@ -37,7 +62,10 @@ object KeyboardUi {
         button.text = label
         button.setTextColor(COLOR_TEXT)
         button.setTextSize(TypedValue.COMPLEX_UNIT_SP, keyTextSize(label).toFloat())
-        val normal = if (functionKey || label == "空格" || label == "space") COLOR_FUNCTION_KEY else COLOR_PANEL
+        // Letter keys use COLOR_KEY, not COLOR_PANEL. They used to be painted the same
+        // colour as the panel behind them, which left the keys with no visible boundary at
+        // all — only floating glyphs. COLOR_KEY existed but nothing referenced it.
+        val normal = if (functionKey || label == "空格" || label == "space") COLOR_FUNCTION_KEY else COLOR_KEY
         val pressed = if (functionKey) COLOR_FUNCTION_PRESSED else COLOR_KEY_PRESSED
         button.background = roundedSelector(ctx, normal, pressed, 8, Color.TRANSPARENT, 0)
         button.elevation = 0f
@@ -72,7 +100,7 @@ object KeyboardUi {
         button.setTextColor(COLOR_SUBTLE)
         button.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
         button.background = roundedSelector(
-            ctx, 0xFFFAFAFA.toInt(), COLOR_TOOLBAR_PRESSED, 16, COLOR_STROKE, 1
+            ctx, COLOR_TOOLBAR_KEY, COLOR_TOOLBAR_PRESSED, 16, COLOR_STROKE, 1
         )
         return button
     }
@@ -87,12 +115,12 @@ object KeyboardUi {
     }
 
     fun styleActiveKey(ctx: Context, button: Button) {
-        button.setTextColor(Color.WHITE)
+        button.setTextColor(COLOR_ON_ACCENT)
         button.background = roundedSelector(ctx, COLOR_ACCENT, COLOR_ACCENT_PRESSED, 8, Color.TRANSPARENT, 0)
     }
 
     fun styleActiveToolbarKey(ctx: Context, button: Button) {
-        button.setTextColor(Color.WHITE)
+        button.setTextColor(COLOR_ON_ACCENT)
         button.background = roundedSelector(ctx, COLOR_ACCENT, COLOR_ACCENT_PRESSED, 16, Color.TRANSPARENT, 0)
     }
 
@@ -103,22 +131,25 @@ object KeyboardUi {
 
     /** Tinted style for the secure-send buttons (密文 / 密图) so they group visually. */
     fun styleSecureToolbarKey(ctx: Context, button: Button) {
-        button.setTextColor(Color.WHITE)
+        button.setTextColor(COLOR_ON_ACCENT)
         button.background = roundedSelector(ctx, COLOR_ACCENT, COLOR_ACCENT_PRESSED, 14, Color.TRANSPARENT, 0)
     }
 
     fun keyParams(ctx: Context, leftDp: Int, weight: Float): LinearLayout.LayoutParams =
-        LinearLayout.LayoutParams(0, dp(ctx, KEY_HEIGHT_DP), weight).apply {
+        LinearLayout.LayoutParams(0, dp(ctx, rowHeight(KEY_HEIGHT_DP)), weight).apply {
             leftMargin = dp(ctx, leftDp)
         }
 
     fun toolbarParams(ctx: Context, leftDp: Int, weight: Float): LinearLayout.LayoutParams =
-        LinearLayout.LayoutParams(0, dp(ctx, TOOLBAR_HEIGHT_DP), weight).apply {
+        LinearLayout.LayoutParams(0, dp(ctx, rowHeight(TOOLBAR_HEIGHT_DP)), weight).apply {
             leftMargin = dp(ctx, leftDp)
         }
 
     fun candidateParams(ctx: Context, leftDp: Int, weight: Float): LinearLayout.LayoutParams =
-        LinearLayout.LayoutParams(0, dp(ctx, 42), weight).apply { leftMargin = dp(ctx, leftDp) }
+        LinearLayout.LayoutParams(0, dp(ctx, rowHeight(CANDIDATE_HEIGHT_DP)), weight)
+            .apply { leftMargin = dp(ctx, leftDp) }
+
+    fun candidateStripHeight(ctx: Context): Int = dp(ctx, rowHeight(CANDIDATE_HEIGHT_DP))
 
     /**
      * A full-width, tappable mode banner shown in the candidate strip when there's
@@ -136,11 +167,12 @@ object KeyboardUi {
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
             setPadding(dp(ctx, 14), 0, dp(ctx, 14), 0)
             if (chineseMode) {
-                setTextColor(Color.WHITE)
+                setTextColor(COLOR_ON_ACCENT)
                 background = roundedSelector(ctx, COLOR_ACCENT, COLOR_ACCENT_PRESSED, 14, Color.TRANSPARENT, 0)
             } else {
-                setTextColor(0xFFB4641F.toInt())
-                background = roundedSelector(ctx, 0xFFFFF3E0.toInt(), 0xFFFFE0B2.toInt(), 14, 0xFFB4641F.toInt(), 1)
+                setTextColor(Palette.kbWarnText)
+                background = roundedSelector(
+                    ctx, Palette.kbWarnBg, Palette.kbWarnBgPressed, 14, Palette.kbWarnText, 1)
             }
         }
     }
