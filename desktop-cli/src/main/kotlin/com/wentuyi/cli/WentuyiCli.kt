@@ -110,6 +110,55 @@ private fun run(args: List<String>) {
                 com.wentuyi.protocol.CryptoUtils.wipe(secret)
             }
         }
+        // ─── Profile: one identity + peers, so the bridges don't route protocols ──
+        "init" -> ProfileCommands.init(Profile.default())
+        "whoami" -> ProfileCommands.whoami(Profile.default())
+        "import-identity" -> {
+            val backup = System.getenv("WENTUYI_BACKUP")?.takeIf { it.isNotEmpty() }
+                ?: resolveText(args.drop(1), emptySet())
+            val identity = Profile.default().importIdentity(backup)
+            println("fingerprint=${identity.fingerprint}")
+        }
+        "set-passphrase" -> {
+            val value = System.getenv("WENTUYI_PASSPHRASE")?.takeIf { it.isNotEmpty() }
+                ?: resolveText(args.drop(1), emptySet())
+            Profile.default().setPassphrase(value)
+            println("passphrase saved")
+        }
+        "peer-add" -> {
+            val profile = Profile.default()
+            val name = option(args, "--name")
+            profile.addPeer(name, peerPublic(args))
+            val identity = runCatching { profile.loadIdentity() }.getOrNull()
+            if (identity != null) {
+                println("sas=${KeyExchange.shortAuthString(identity, profile.peerPublicKey(name))}")
+                System.err.println(
+                    "Compare that 8-digit code with $name out of band before trusting this peer.")
+            }
+        }
+        "peer-list" -> ProfileCommands.peerList(Profile.default())
+        "peer-remove" -> Profile.default().removePeer(option(args, "--peer"))
+        "peer-reset" -> {
+            // Opens a fresh epoch we are the sender of; the peer adopts it on our next
+            // message. The escape hatch for "their messages stopped decrypting".
+            val profile = Profile.default()
+            val name = option(args, "--peer")
+            val identity = profile.loadIdentity()
+            val peer = profile.peerPublicKey(name)
+            val epoch = DoubleRatchet.newEpoch()
+            profile.saveRatchet(name, DoubleRatchet.initSender(
+                DoubleRatchet.initialRootKey(identity, peer, epoch), peer, epoch))
+            println("epoch=$epoch")
+            System.err.println("Now send $name one message to complete the recovery.")
+        }
+        "send" -> {
+            val peer = optionOrNull(args, "--peer")
+            val text = resolveText(args.drop(1), setOf("--peer"))
+            ProfileCommands.send(Profile.default(), peer, text)
+        }
+        "receive" -> ProfileCommands.receive(
+            Profile.default(), resolveText(args.drop(1), emptySet()))
+
         // ─── WTY5 Double Ratchet ──────────────────────────────────────────────────
         // The Android app sends WTY5 to every verified contact by default, so without these
         // a desktop peer simply cannot read messages from someone who verified them — the
@@ -275,7 +324,21 @@ private fun printHelp() {
           chunk WTY_PAYLOAD
           assemble WTYP1_CHUNK...
 
-        WTY5 Double Ratchet (forward secrecy; --state FILE holds the session and private
+        Profile (WENTUYI_HOME env, default ~/.config/wentuyi; all files 0600). These pick the
+        protocol for you — prefer them over the raw commands above, and note the identity
+        file IS your private key stored in the clear (no Keystore on desktop):
+          init                                    create this machine's identity
+          whoami                                  fingerprint / public key / identity QR
+          import-identity [WTYB1 | --stdin]       (or WENTUYI_BACKUP env)
+          set-passphrase [KEY | --stdin]          shared key for the legacy path
+          peer-add --name NAME (--peer-public B64URL | --peer-qr WTYID1)
+          peer-list / peer-remove --peer NAME
+          peer-reset --peer NAME                  open a fresh session after a desync
+          send [--peer NAME] TEXT                 ratchet if possible, else session key,
+                                                  else shared passphrase (no --peer)
+          receive WTY_PAYLOAD                     auto-detects the protocol and the sender
+
+        WTY5 Double Ratchet, raw/stateless form (--state FILE holds the session and private
         key material — it is written 0600, treat it like the backup code):
           ratchet-init --backup WTYB1 (--peer-public B64URL | --peer-qr WTYID1) --state FILE
           ratchet-encrypt --state FILE TEXT

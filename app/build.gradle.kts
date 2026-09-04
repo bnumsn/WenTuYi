@@ -11,8 +11,8 @@ android {
         applicationId = "com.wentuyi.app"
         minSdk = 23
         targetSdk = 36
-        versionCode = 11
-        versionName = "0.7.0"
+        versionCode = 12
+        versionName = "0.7.1"
 
         // androidx.test.runner.AndroidJUnitRunner lets `connectedDebugAndroidTest`
         // discover @Test methods. The legacy single-class Instrumentation is

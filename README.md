@@ -8,7 +8,8 @@
 
 - Android 原生 IME 是当前完整产品实现；除 `com.google.zxing:core` 与 `org.bouncycastle:bcprov-jdk18on` 两个**纯 Java**库外不引入 AndroidX。
 - `shared-protocol` 是纯 JVM 协议核心，供桌面 CLI 和后续平台外壳复用。
-- `desktop-cli` 提供 Windows/Linux 可运行命令行：加密、解密、身份、SAS、会话密钥、**WTY5 双棘轮**（`ratchet-init` / `ratchet-encrypt` / `ratchet-decrypt` / `ratchet-info`，会话存于 `--state` 文件）和 QR 分片。Android 默认对已验证联系人发 WTY5，桌面端因此必须支持它，否则"验证得越认真越收不到消息"。
+- `desktop-cli` 提供 Windows/Linux 可运行命令行。推荐用 **profile 模式**：`init` / `peer-add` / `send [--peer NAME]` / `receive`，由 CLI 自己选协议（WTY5 棘轮 > WTY4 会话密钥 > 共享密钥），会话状态存在 `WENTUYI_HOME`（默认 `~/.config/wentuyi`，全部 0600）。底层的无状态命令（`encrypt-text` / `session-encrypt` / `ratchet-*` / `encrypted-qr` / `chunk`）仍保留。
+- Linux/Windows 的输入桥（`wentuyi-send` / `wentuyi-insert` / IBus 引擎）已接到 `send` / `receive`，因此**支持联系人与前向保密**；此前它们只调用 `encrypt-text`，也就是只有共享密钥一条路——Android 对已验证联系人默认发 WTY5，于是"双方验证得越认真，桌面端越收不到消息"。加 `--peer NAME`（或 `WENTUYI_PEER` 环境变量）即可。
 - `platforms/apple` 只是 iOS Keyboard Extension / macOS InputMethodKit 的 Swift 外壳，**尚未接入任何密码学实现**，不可用于真实通信；平台受限能力见 [docs/CROSS_PLATFORM.md](docs/CROSS_PLATFORM.md)。
 - `platforms/linux/ibus` 提供 Linux IBus 输入法入口；`platforms/windows/wentuyi-hotkey.ps1` 提供 Windows 登录会话里的全局热键输入桥。
 - Kotlin 1.9 + Coroutines；Java 17。
@@ -98,7 +99,7 @@ CI（`.github/workflows/ci.yml`）在每次 push 上跑两条流水线：**协�
 
 ```bash
 ./gradlew :shared-protocol:test
-./scripts/cli-smoke.sh          # 用真实 CLI 走两个身份：WTY4 / WTY5 / 乱序 / 失步恢复 / QR 分片
+./scripts/cli-smoke.sh          # 用真实 CLI 走两个身份：WTY4 / WTY5 / 乱序 / 失步恢复 / profile 互通 / QR 分片（21 项）
 ```
 
 桌面协议 CLI：
@@ -108,17 +109,25 @@ CI（`.github/workflows/ci.yml`）在每次 push 上跑两条流水线：**协�
 desktop-cli/build/install/desktop-cli/bin/desktop-cli help
 ```
 
-WTY5 棘轮（桌面端与 Android 已验证联系人互通所必需）：
+桌面 profile（与 Android 联系人互通的推荐用法）：
 
 ```bash
 CLI=desktop-cli/build/install/desktop-cli/bin/desktop-cli
-export WENTUYI_BACKUP=WTYB1-...                    # 你的备份码，别放进 argv
-$CLI ratchet-init --peer-public <对方公钥B64URL> --state ~/.wentuyi/peer.state
-$CLI ratchet-encrypt --state ~/.wentuyi/peer.state "要发的话"
-$CLI ratchet-decrypt --peer-public <对方公钥B64URL> --state ~/.wentuyi/peer.state 'WTY5:...'
+$CLI init                                          # 生成本机身份，存入 WENTUYI_HOME
+$CLI whoami                                        # 拿到 publicKey / identityQr 给对方扫
+$CLI peer-add --name alice --peer-qr 'WTYID1|...'  # 会打印 8 位 SAS，务必口外核对
+$CLI send --peer alice "要发的话"                   # 自动选协议，优先 WTY5
+$CLI receive 'WTY5:...'                            # 自动识别协议与发信人
+$CLI peer-reset --peer alice                       # 会话失步时的恢复入口
 ```
 
-只需一方 `ratchet-init`；另一方首次 `ratchet-decrypt` 会从密文里的 epoch 自动自举。`--state` 文件含私钥材料，写入时置 0600。
+`send` 在棘轮尚无发送链时会回落到 WTY4 会话密钥，并在 stderr 明确提示"本条无前向保密"，不会静默降级。`receive` 收到更新的 epoch 会自动重新自举（对方重装），收到已退休的 epoch 则拒绝（防重放）。
+
+输入桥同样支持：`wentuyi-insert.sh --peer alice --encrypt-text -`、`wentuyi-send.ps1 -Peer alice -EncryptText "..."`，IBus 引擎读 `WENTUYI_PEER`。
+
+⚠ 桌面没有 Keystore：`WENTUYI_HOME` 下的 `identity` 就是明文私钥，`peers/*.ratchet` 是明文会话状态。文件写入时置 0600（Windows 无 POSIX 权限时不生效），这是唯一的保护。
+
+底层无状态命令仍在（`ratchet-init` / `ratchet-encrypt` / `ratchet-decrypt` / `ratchet-info`，会话经 `--state` 文件），适合脚本化或不想落 profile 的场景。
 
 Linux 远程 smoke：
 

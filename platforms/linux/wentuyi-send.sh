@@ -5,6 +5,9 @@ CLI="${WENTUYI_CLI:-desktop-cli}"
 INSERT_SCRIPT="${WENTUYI_INSERT_SCRIPT:-$(dirname "$0")/wentuyi-insert.sh}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PASSPHRASE="${WENTUYI_PASSPHRASE:-}"
+# Optional contact. With --peer the CLI uses the WTY5 ratchet (or the WTY4 session key
+# until a sending chain exists); without it, the legacy shared passphrase.
+PEER="${WENTUYI_PEER:-}"
 PASSPHRASE_FILE="${WENTUYI_PASSPHRASE_FILE:-$HOME/.config/wentuyi/passphrase}"
 APP="${WENTUYI_SEND_APP:-focused}"
 TO="test@example.invalid"
@@ -17,7 +20,12 @@ VALUE=""
 usage() {
     cat >&2 <<'USAGE'
 Usage: wentuyi-send.sh [--app focused|claws-mail|thunderbird] [--to ADDRESS] [--subject TEXT]
+                       [--peer NAME]
                        (--text TEXT | --encrypt-text TEXT | --plain-image TEXT | --encrypted-qr TEXT)
+
+--peer NAME encrypts to a contact from the profile under WENTUYI_HOME (see
+`desktop-cli peer-add`), using forward-secret WTY5 once a ratchet chain exists.
+Without it the legacy shared passphrase is used.
 
 Direct delivery, no clipboard:
   focused      text/encrypt-text is typed into the focused X11 target with wentuyi-insert.sh.
@@ -29,6 +37,7 @@ USAGE
 while [ $# -gt 0 ]; do
     case "$1" in
         --app) APP="$2"; shift 2 ;;
+        --peer) PEER="$2"; shift 2 ;;
         --to) TO="$2"; shift 2 ;;
         --subject) SUBJECT="$2"; shift 2 ;;
         --out-dir) OUT_DIR="$2"; shift 2 ;;
@@ -64,11 +73,23 @@ if ! command -v "$CLI" >/dev/null 2>&1 && [ ! -x "$CLI" ]; then
     fi
 fi
 
+# Optional now: `send --peer` reads the profile instead, so a contact-only setup must not
+# die with "Set WENTUYI_PASSPHRASE".
 passphrase() {
     if [ -n "$PASSPHRASE" ]; then printf '%s' "$PASSPHRASE"; return; fi
     if [ -f "$PASSPHRASE_FILE" ]; then head -n 1 "$PASSPHRASE_FILE"; return; fi
-    echo "Set WENTUYI_PASSPHRASE or create $PASSPHRASE_FILE" >&2
-    exit 2
+    printf ''
+}
+
+# Runs the CLI with the passphrase in the environment (never argv) when there is one.
+cli_env() {
+    local pass
+    pass="$(passphrase)"
+    if [ -n "$pass" ]; then
+        WENTUYI_PASSPHRASE="$pass" "$@"
+    else
+        "$@"
+    fi
 }
 
 uri_for() {
@@ -139,8 +160,8 @@ case "$MODE" in
         send_text "$VALUE"
         ;;
     encrypt-text)
-        # Secret via env, text via stdin → kept out of argv.
-        payload=$(printf '%s' "$VALUE" | WENTUYI_PASSPHRASE="$(passphrase)" "$CLI" encrypt-text --stdin)
+        # Secret via env, text via stdin → kept out of argv. `send` picks the protocol.
+        payload=$(printf '%s' "$VALUE" | cli_env "$CLI" send ${PEER:+--peer "$PEER"} --stdin)
         send_text "$payload"
         ;;
     plain-image)
@@ -149,7 +170,10 @@ case "$MODE" in
         send_files "$out"
         ;;
     encrypted-qr)
-        mapfile -t files < <(printf '%s' "$VALUE" | WENTUYI_PASSPHRASE="$(passphrase)" "$CLI" encrypted-qr --out-dir "$OUT_DIR" --prefix wentuyi-qr --stdin)
+        # Two steps so the QR path gets contacts too: `send` produces the payload with
+        # whichever protocol applies, `payload-qr` just renders it.
+        payload=$(printf '%s' "$VALUE" | cli_env "$CLI" send ${PEER:+--peer "$PEER"} --stdin)
+        mapfile -t files < <(printf '%s' "$payload" | "$CLI" payload-qr --out-dir "$OUT_DIR" --prefix wentuyi-qr --stdin)
         send_files "${files[@]}"
         ;;
 esac

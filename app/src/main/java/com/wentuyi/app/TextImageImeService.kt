@@ -103,14 +103,7 @@ class TextImageImeService : InputMethodService() {
     private companion object {
         /** Cap for getTextBefore/AfterCursor — large enough for any realistic message. */
         const val MAX_FIELD_CHARS = 100_000
-        /**
-         * Fallback bottom padding when the real inset can't be read. The old code always
-         * used a hard-coded 34dp, which is dead space on a 3-button-navigation device or a
-         * tablet and can be short of the gesture bar on a tall phone; [applyBottomInset]
-         * now measures it and only falls back to this.
-         */
-        const val BOTTOM_SYSTEM_SAFE_AREA_DP = 20
-        /** Visual breathing room under the last key row, even when the inset reports 0. */
+        /** Visual breathing room under the last key row. See [applyBottomInset]. */
         const val MIN_BOTTOM_GAP_DP = 8
     }
 
@@ -139,7 +132,7 @@ class TextImageImeService : InputMethodService() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(KeyboardUi.dp(context, 4), KeyboardUi.dp(context, 4),
-                KeyboardUi.dp(context, 4), KeyboardUi.dp(context, BOTTOM_SYSTEM_SAFE_AREA_DP))
+                KeyboardUi.dp(context, 4), KeyboardUi.dp(context, MIN_BOTTOM_GAP_DP))
             setBackgroundColor(KeyboardUi.COLOR_PANEL)
         }
         applyBottomInset(root)
@@ -218,33 +211,24 @@ class TextImageImeService : InputMethodService() {
             android.content.res.Configuration.ORIENTATION_LANDSCAPE
 
     /**
-     * Pads the input view by the real navigation-bar inset rather than a fixed guess.
-     * `rootWindowInsets` is only meaningful once attached, hence the attach listener.
+     * Bottom padding under the last key row.
+     *
+     * Measured on a device rather than reasoned about, because both previous attempts were
+     * wrong in opposite directions. A hard-coded 34dp was dead space on 3-button-navigation
+     * devices; reading `navigationBars()` instead reported **0dp in portrait** (so the keys
+     * sat flush against the system's IME navigation strip) and **48dp in landscape** — on
+     * top of the 48dp the system had already reserved, i.e. counted twice, costing ~12% of
+     * a landscape screen.
+     *
+     * The inset simply isn't meaningful here: InputMethodService windows are already laid
+     * out above the navigation bar, so nothing needs to be cleared. What is actually wanted
+     * is a small, predictable visual gap, which is what this is.
      */
     private fun applyBottomInset(root: View) {
-        fun bottomPx(): Int {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                root.rootWindowInsets?.let {
-                    return it.getInsets(android.view.WindowInsets.Type.navigationBars()).bottom
-                }
-            } else {
-                @Suppress("DEPRECATION")
-                root.rootWindowInsets?.let { return it.systemWindowInsetBottom }
-            }
-            return KeyboardUi.dp(this, BOTTOM_SYSTEM_SAFE_AREA_DP)
-        }
-        fun apply() {
-            // The system already lays the IME window above the navigation bar, so the inset
-            // is usually 0 and the bottom key row ends up flush against it with no gap at
-            // all. Keep a small guaranteed margin on top of whatever the inset reports.
-            val bottom = maxOf(bottomPx(), KeyboardUi.dp(this, MIN_BOTTOM_GAP_DP))
-            root.setPadding(root.paddingLeft, root.paddingTop, root.paddingRight, bottom)
-        }
-        if (root.isAttachedToWindow) apply()
-        root.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
-            override fun onViewAttachedToWindow(v: View) = apply()
-            override fun onViewDetachedFromWindow(v: View) = Unit
-        })
+        root.setPadding(
+            root.paddingLeft, root.paddingTop, root.paddingRight,
+            KeyboardUi.dp(this, MIN_BOTTOM_GAP_DP),
+        )
     }
 
     override fun onStartInput(attribute: EditorInfo?, restarting: Boolean) {

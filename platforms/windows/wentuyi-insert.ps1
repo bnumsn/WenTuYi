@@ -2,6 +2,8 @@ param(
     [string] $Text,
     [string] $EncryptText,
     [string] $DecryptText,
+    # Contact from the profile under WENTUYI_HOME; enables the forward-secret WTY5 path.
+    [string] $Peer = $env:WENTUYI_PEER,
     [IntPtr] $TargetHwnd = [IntPtr]::Zero,
     [string] $CliScript,
     [string] $PassphraseFile = "$env:APPDATA\Wentuyi\passphrase.txt",
@@ -105,12 +107,15 @@ public static class WentuyiDirectInsertNative {
 "@
 }
 
-function Get-WentuyiPassphrase {
+# -AllowMissing returns $null instead of throwing: with `send --peer` / `receive` the CLI
+# reads the profile under WENTUYI_HOME, so a contact-only setup has no shared key at all.
+function Get-WentuyiPassphrase([switch] $AllowMissing) {
     if ($env:WENTUYI_PASSPHRASE) { return $env:WENTUYI_PASSPHRASE }
     if (Test-Path $PassphraseFile) {
         $value = (Get-Content -LiteralPath $PassphraseFile -Raw).Trim()
         if ($value) { return $value }
     }
+    if ($AllowMissing) { return $null }
     throw "Set WENTUYI_PASSPHRASE or create $PassphraseFile"
 }
 
@@ -149,15 +154,23 @@ if ($Text) {
     return
 }
 
-$passphrase = Get-WentuyiPassphrase
+# The passphrase is optional now: `send -Peer` and `receive` read the profile instead, so
+# a contact-only setup must not fail for lack of a shared key.
+$passphrase = Get-WentuyiPassphrase -AllowMissing
+
 if ($EncryptText) {
-    $payload = Invoke-WentuyiCli @("encrypt-text") -Passphrase $passphrase -StdinText $EncryptText
+    # `send` picks the protocol (WTY5 ratchet > WTY4 session key > shared passphrase);
+    # making that choice in PowerShell is what kept this bridge shared-key-only.
+    $sendArgs = @("send")
+    if ($Peer) { $sendArgs += @("--peer", $Peer) }
+    $payload = Invoke-WentuyiCli $sendArgs -Passphrase $passphrase -StdinText $EncryptText
     [WentuyiDirectInsertNative]::InsertText($TargetHwnd, $payload)
     return
 }
 
 if ($DecryptText) {
-    $plain = Invoke-WentuyiCli @("decrypt-text") -Passphrase $passphrase -StdinText $DecryptText
+    # `receive` auto-detects WTY5 / WTY4-session / WTY4-passphrase and the sender.
+    $plain = Invoke-WentuyiCli @("receive") -Passphrase $passphrase -StdinText $DecryptText
     [WentuyiDirectInsertNative]::InsertText($TargetHwnd, $plain)
     return
 }

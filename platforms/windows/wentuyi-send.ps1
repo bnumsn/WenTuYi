@@ -8,6 +8,8 @@ param(
     [string] $PlainImage,
     [string] $EncryptedQr,
     [string] $OutDir,
+    # Contact from the profile under WENTUYI_HOME; enables the forward-secret WTY5 path.
+    [string] $Peer = $env:WENTUYI_PEER,
     [string] $PassphraseFile = "$env:APPDATA\Wentuyi\passphrase.txt"
 )
 
@@ -54,12 +56,15 @@ function Set-DesktopCliRuntime {
     if (Test-Path $cli) { $env:WENTUYI_CLI = $cli }
 }
 
-function Get-WentuyiPassphrase {
+# -AllowMissing returns $null instead of throwing: with `send --peer` / `receive` the CLI
+# reads the profile under WENTUYI_HOME, so a contact-only setup has no shared key at all.
+function Get-WentuyiPassphrase([switch] $AllowMissing) {
     if ($env:WENTUYI_PASSPHRASE) { return $env:WENTUYI_PASSPHRASE }
     if (Test-Path $PassphraseFile) {
         $value = (Get-Content -LiteralPath $PassphraseFile -Raw).Trim()
         if ($value) { return $value }
     }
+    if ($AllowMissing) { return $null }
     throw "Set WENTUYI_PASSPHRASE or create $PassphraseFile"
 }
 
@@ -166,7 +171,9 @@ if ($set -ne 1) { throw "Specify exactly one of -Text, -EncryptText, -PlainImage
 
 if ($Text) { Send-Body $Text; return }
 if ($EncryptText) {
-    $payload = (Invoke-WentuyiCli @("encrypt-text") -Passphrase (Get-WentuyiPassphrase) -StdinText $EncryptText)[0]
+    $sendArgs = @("send")
+    if ($Peer) { $sendArgs += @("--peer", $Peer) }
+    $payload = (Invoke-WentuyiCli $sendArgs -Passphrase (Get-WentuyiPassphrase -AllowMissing) -StdinText $EncryptText)[0]
     Send-Body $payload
     return
 }
@@ -177,7 +184,12 @@ if ($PlainImage) {
     return
 }
 if ($EncryptedQr) {
-    $files = Invoke-WentuyiCli @("encrypted-qr", "--out-dir", $OutDir, "--prefix", "wentuyi-qr") -Passphrase (Get-WentuyiPassphrase) -StdinText $EncryptedQr
-    Send-Files $files
+    # Two steps so the QR path gets contacts too: `send` produces the payload with whichever
+    # protocol applies, `payload-qr` only renders it.
+    $sendArgs = @("send")
+    if ($Peer) { $sendArgs += @("--peer", $Peer) }
+    $payload = (Invoke-WentuyiCli $sendArgs -Passphrase (Get-WentuyiPassphrase -AllowMissing) -StdinText $EncryptedQr)[0]
+    $files = Invoke-WentuyiCli @("payload-qr", "--out-dir", $OutDir, "--prefix", "wentuyi-qr") -StdinText $payload
+    Send-Files @($files)
     return
 }

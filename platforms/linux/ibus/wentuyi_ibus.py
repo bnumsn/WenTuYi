@@ -46,7 +46,9 @@ def run_cli(args: Iterable[str], passphrase: str = None, stdin_text: str = None)
     # /proc/<pid>/cmdline) and the text via stdin (--stdin).
     env = os.environ.copy()
     cli_args = list(args)
-    if passphrase is not None:
+    # Empty means "no shared key configured" — leave the variable unset rather than
+    # exporting a blank one, so the CLI falls through to the profile cleanly.
+    if passphrase:
         env["WENTUYI_PASSPHRASE"] = passphrase
     if stdin_text is not None and "--stdin" not in cli_args:
         cli_args.append("--stdin")
@@ -74,6 +76,11 @@ def debug_log(message: str) -> None:
 
 
 def read_passphrase() -> str:
+    """Shared key, or "" when none is configured.
+
+    Optional since the engine moved to `send`/`receive`: those read the profile under
+    WENTUYI_HOME, so a contact-only setup has no shared key and must not fail here.
+    """
     value = os.environ.get("WENTUYI_PASSPHRASE", "").strip()
     if value:
         return value
@@ -82,12 +89,17 @@ def read_passphrase() -> str:
         value = path.read_text(encoding="utf-8").splitlines()[0].strip()
         if value:
             return value
-    raise RuntimeError("set WENTUYI_PASSPHRASE or ~/.config/wentuyi/passphrase")
+    return ""
+
+
+def read_peer() -> str:
+    """Contact to encrypt to, from WENTUYI_PEER. Empty means the shared-key path."""
+    return os.environ.get("WENTUYI_PEER", "").strip()
 
 
 def self_test() -> int:
-    payload = run_cli(["encrypt-text"], passphrase="ibus-test", stdin_text="ibus smoke")
-    plain = run_cli(["decrypt-text"], passphrase="ibus-test", stdin_text=payload)
+    payload = run_cli(["send"], passphrase="ibus-test", stdin_text="ibus smoke")
+    plain = run_cli(["receive"], passphrase="ibus-test", stdin_text=payload)
     if plain != "ibus smoke":
         raise RuntimeError(f"unexpected plaintext: {plain}")
     print(f"ibus-self-test={plain}")
@@ -161,9 +173,16 @@ def run_ibus() -> int:
             try:
                 passphrase = read_passphrase()
                 if mode == "encrypt":
-                    result = run_cli(["encrypt-text"], passphrase=passphrase, stdin_text=self._preedit)
+                    # `send` picks the protocol: WTY5 ratchet for a peer once a sending
+                    # chain exists, else the WTY4 session key, else the shared passphrase.
+                    args = ["send"]
+                    peer = read_peer()
+                    if peer:
+                        args += ["--peer", peer]
+                    result = run_cli(args, passphrase=passphrase, stdin_text=self._preedit)
                 else:
-                    result = run_cli(["decrypt-text"], passphrase=passphrase, stdin_text=self._preedit)
+                    # `receive` auto-detects WTY5 / WTY4-session / WTY4-passphrase.
+                    result = run_cli(["receive"], passphrase=passphrase, stdin_text=self._preedit)
             except Exception as exc:  # IBus engines should report, not crash.
                 self._aux(f"Wentuyi: {exc}")
                 debug_log(f"transform-error mode={mode} error={exc}")

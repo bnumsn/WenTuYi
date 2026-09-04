@@ -87,6 +87,53 @@ if WENTUYI_BACKUP="$BBK" "$CLI" ratchet-decrypt --peer-public "$APUB" --state b.
 fi
 pass=$((pass + 1)); echo "  ok   旧 epoch 重放被拒绝"
 
+echo "== Profile（两台机器互通，桥接实际走的就是这条）=="
+# The bridges call `send`/`receive`, which choose the protocol themselves. This section
+# exists because those bridges used to call encrypt-text only — i.e. shared-key forever —
+# so a desktop user could not read a WTY5 message from an Android contact at all.
+export WENTUYI_HOME="$WORK/profile-a"
+PA=("env" "WENTUYI_HOME=$WORK/profile-a" "$CLI")
+PB=("env" "WENTUYI_HOME=$WORK/profile-b" "$CLI")
+APUB2=$("${PA[@]}" init 2>/dev/null | grep '^publicKey=' | cut -d= -f2-)
+BPUB2=$("${PB[@]}" init 2>/dev/null | grep '^publicKey=' | cut -d= -f2-)
+SAS_PA=$("${PA[@]}" peer-add --name bob --peer-public "$BPUB2" 2>/dev/null | grep '^sas=' | cut -d= -f2)
+SAS_PB=$("${PB[@]}" peer-add --name alice --peer-public "$APUB2" 2>/dev/null | grep '^sas=' | cut -d= -f2)
+check "profile SAS 双向一致" "$SAS_PA" "$SAS_PB"
+
+M=$("${PA[@]}" send --peer bob "今晚八点老地方" 2>/dev/null)
+OUT=$("${PB[@]}" receive "$M" 2>/dev/null)
+check "A 发 → B 收" "今晚八点老地方" "$OUT"
+R=$("${PB[@]}" send --peer alice "收到" 2>/dev/null)
+OUT=$("${PA[@]}" receive "$R" 2>/dev/null)
+check "B 回 → A 收" "收到" "$OUT"
+
+# Once both chains exist the protocol must upgrade itself — no flag, no user action.
+M2=$("${PA[@]}" send --peer bob "第二条" 2>/dev/null)
+case "$M2" in WTY5:*) ;; *) echo "  FAIL 棘轮建立后仍未升级到 WTY5（实际 ${M2:0:5}）"; exit 1 ;; esac
+pass=$((pass + 1)); echo "  ok   棘轮建立后自动升级为 WTY5"
+OUT=$("${PB[@]}" receive "$M2" 2>/dev/null)
+check "升级后仍可解" "第二条" "$OUT"
+
+# A loses its state and resets; B must adopt the new epoch with no action of its own.
+PSTALE=$("${PA[@]}" send --peer bob "旧会话消息" 2>/dev/null)
+rm -f "$WORK/profile-a/peers/bob.ratchet"
+"${PA[@]}" peer-reset --peer bob >/dev/null 2>&1
+M3=$("${PA[@]}" send --peer bob "我重装了" 2>/dev/null)
+OUT=$("${PB[@]}" receive "$M3" 2>/dev/null)
+check "A 重置后 B 自动采纳新会话" "我重装了" "$OUT"
+if "${PB[@]}" receive "$PSTALE" >/dev/null 2>&1; then
+  echo "  FAIL profile: 已退休 epoch 的密文被重放进了活会话"; exit 1
+fi
+pass=$((pass + 1)); echo "  ok   profile 旧 epoch 重放被拒绝"
+
+# No --peer at all must still work through the legacy shared key.
+"${PA[@]}" set-passphrase "shared 文图易" >/dev/null 2>&1
+"${PB[@]}" set-passphrase "shared 文图易" >/dev/null 2>&1
+SP=$("${PA[@]}" send "共享密钥消息" 2>/dev/null)
+OUT=$("${PB[@]}" receive "$SP" 2>/dev/null)
+check "无 --peer 时回落共享密钥" "共享密钥消息" "$OUT"
+unset WENTUYI_HOME
+
 echo "== QR 分片 =="
 LONG=$(WENTUYI_PASSPHRASE="k" "$CLI" encrypt-text "$(head -c 1200 /dev/urandom | base64 | tr -d '\n')")
 CHUNKS=$("$CLI" chunk "$LONG")
