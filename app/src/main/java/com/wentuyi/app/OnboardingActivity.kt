@@ -151,7 +151,7 @@ class OnboardingActivity : Activity() {
                         actionLabel: String, action: () -> Unit): TextView {
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.WHITE)
+            setBackgroundColor(Palette.card)
             setPadding(dp(16), dp(14), dp(16), dp(14))
         }
         val titleRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }

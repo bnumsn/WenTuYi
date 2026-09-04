@@ -74,7 +74,7 @@ class KeyManagementActivity : Activity() {
         root.addView(heading("我的身份码"), matchWrap())
         identityImage = ImageView(this).apply {
             adjustViewBounds = true
-            setBackgroundColor(Color.WHITE)
+            setBackgroundColor(Palette.card)
         }
         root.addView(identityImage, matchWrapWithTop(12))
 
@@ -158,7 +158,7 @@ class KeyManagementActivity : Activity() {
                 .getOrDefault("—")  // belt-and-braces: shouldn't fire after pruneInvalidContacts
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
-                setBackgroundColor(Color.WHITE)
+                setBackgroundColor(Palette.card)
                 setPadding(dp(12), dp(10), dp(12), dp(10))
             }
             val nameRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }

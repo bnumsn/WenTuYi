@@ -103,7 +103,7 @@ class ScanActivity : Activity() {
 
         preview = ImageView(this).apply {
             adjustViewBounds = true
-            setBackgroundColor(Color.WHITE)
+            setBackgroundColor(Palette.card)
             visibility = View.GONE
         }
         root.addView(preview, matchWrapWithTop(16))
@@ -111,7 +111,7 @@ class ScanActivity : Activity() {
         resultView = TextView(this).apply {
             setTextColor(Palette.textPrimary)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
-            setBackgroundColor(Color.WHITE)
+            setBackgroundColor(Palette.card)
             setPadding(dp(14), dp(14), dp(14), dp(14))
             minLines = 5
             text = "等待扫码…"

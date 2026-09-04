@@ -111,6 +111,8 @@ class TextImageImeService : InputMethodService() {
          * now measures it and only falls back to this.
          */
         const val BOTTOM_SYSTEM_SAFE_AREA_DP = 20
+        /** Visual breathing room under the last key row, even when the inset reports 0. */
+        const val MIN_BOTTOM_GAP_DP = 8
     }
 
     override fun onCreate() {
@@ -242,7 +244,11 @@ class TextImageImeService : InputMethodService() {
             return KeyboardUi.dp(this, BOTTOM_SYSTEM_SAFE_AREA_DP)
         }
         fun apply() {
-            root.setPadding(root.paddingLeft, root.paddingTop, root.paddingRight, bottomPx())
+            // The system already lays the IME window above the navigation bar, so the inset
+            // is usually 0 and the bottom key row ends up flush against it with no gap at
+            // all. Keep a small guaranteed margin on top of whatever the inset reports.
+            val bottom = maxOf(bottomPx(), KeyboardUi.dp(this, MIN_BOTTOM_GAP_DP))
+            root.setPadding(root.paddingLeft, root.paddingTop, root.paddingRight, bottom)
         }
         if (root.isAttachedToWindow) apply()
         root.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
@@ -312,7 +318,8 @@ class TextImageImeService : InputMethodService() {
         decryptImageView = ImageView(this).apply {
             adjustViewBounds = true
             maxHeight = KeyboardUi.dp(context, 180)
-            setBackgroundColor(Color.WHITE)
+            // Letterboxing behind a decrypted image; must not be a glaring white slab in dark.
+            setBackgroundColor(KeyboardUi.COLOR_TOOLBAR_KEY)
             visibility = View.GONE
         }
         panel.addView(decryptImageView, KeyboardUi.matchWrapWithTop(this, 6))
@@ -625,7 +632,7 @@ class TextImageImeService : InputMethodService() {
             if (chineseMode) "当前中文拼音输入，点按切换到英文" else "当前英文直输，点按切换到中文拼音"
         if (chineseMode) {
             chip.text = "中"
-            chip.setTextColor(Color.WHITE)
+            chip.setTextColor(KeyboardUi.COLOR_ON_ACCENT)
             chip.background = KeyboardUi.roundedSelector(this,
                 KeyboardUi.COLOR_ACCENT, KeyboardUi.COLOR_ACCENT_PRESSED, 14, Color.TRANSPARENT, 0)
         } else {
@@ -899,7 +906,7 @@ class TextImageImeService : InputMethodService() {
             isFocusableInTouchMode = false
             stateListAnimator = null
             if (accent) {
-                setTextColor(Color.WHITE)
+                setTextColor(KeyboardUi.COLOR_ON_ACCENT)
                 background = KeyboardUi.roundedSelector(this@TextImageImeService,
                     KeyboardUi.COLOR_ACCENT, KeyboardUi.COLOR_ACCENT_PRESSED, 14,
                     Color.TRANSPARENT, 0)

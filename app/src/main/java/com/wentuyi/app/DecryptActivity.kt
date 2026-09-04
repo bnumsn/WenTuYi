@@ -107,7 +107,7 @@ class DecryptActivity : Activity() {
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
             minLines = 7
             setPadding(dp(14), dp(14), dp(14), dp(14))
-            setBackgroundColor(Color.WHITE)
+            setBackgroundColor(Palette.card)
             text = "等待解密内容…"
         }
         root.addView(resultView, matchWrapWithTop(18))
@@ -268,7 +268,7 @@ class DecryptActivity : Activity() {
     private fun addResultImage(bitmap: Bitmap) {
         val view = ImageView(this).apply {
             adjustViewBounds = true
-            setBackgroundColor(Color.WHITE)
+            setBackgroundColor(Palette.card)
             setImageBitmap(bitmap)
         }
         val params = matchWrap()

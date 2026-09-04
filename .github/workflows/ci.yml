@@ -54,6 +54,8 @@ jobs:
         run: ./gradlew :app:assembleDebug
       - name: 编译 instrumentation 套件
         run: ./gradlew :app:assembleDebugAndroidTest
+      - name: 主题守卫（禁止绕过 Palette 的硬编码颜色）
+        run: ./scripts/check-theming.sh
       - name: lint
         run: ./gradlew :app:lintDebug
       - uses: actions/upload-artifact@v4
