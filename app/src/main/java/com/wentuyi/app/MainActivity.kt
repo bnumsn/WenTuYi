@@ -37,6 +37,8 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Sweep any decrypted-plaintext PNG whose short TTL has expired.
+        ImageStore.pruneNow(this)
         // First-launch tutorial — runs once. Share intents (ACTION_SEND/MULTIPLE) still
         // go through the forwarder so receiving an encrypted image isn't blocked by setup.
         if (!OnboardingActivity.isDone(this) && !isSharedIntent(intent)) {

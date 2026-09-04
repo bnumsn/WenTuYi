@@ -7,10 +7,10 @@
 | 平台 | 可行性 | 输入法形态 | 仓库当前状态 |
 |---|---:|---|---|
 | Android | 高 | `InputMethodService` | 完整 IME，仍是功能基准 |
-| iOS / iPadOS | 中低 | Keyboard Extension + 主 App + Share Extension | 已有 Swift 键盘外壳和共享模型；需 macOS/Xcode 接入真实 crypto backend 后测试 |
-| macOS | 中高 | `InputMethodKit` | 已有 Swift `IMKInputController` 外壳；需 macOS/Xcode 打包和系统输入法注册测试 |
-| Windows | 中高 | 全局热键输入桥 / 后续 TSF IME | 已有 PowerShell hotkey bridge、便携 JRE 支持和 JVM CLI 包；Windows 测试机已通过 package smoke 和 RDP 交互 UI smoke |
-| Linux / BSD | 中 | IBus engine / direct insert helper / Fcitx5 后续可选 | 已有 IBus engine、wrapper、direct insert helper 和远程 smoke 脚本；Linux 测试机已通过 CLI、IBus self-test、Xvfb/GTK Entry UI smoke 和富文本 direct insert smoke |
+| iOS / iPadOS | 中低 | Keyboard Extension + 主 App + Share Extension | **仅 UI 外壳，无密码学实现**（`WentuyiCryptoBackend` 是空 protocol，调用返回 `cryptoBackendMissing`）。不可用于真实通信 |
+| macOS | 中高 | `InputMethodKit` | **仅 UI 外壳，无密码学实现**，同上。需 macOS/Xcode 打包和系统输入法注册测试 |
+| Windows | 中高 | 全局热键输入桥 / 后续 TSF IME | 已有 PowerShell hotkey bridge、便携 JRE 支持和 JVM CLI 包（含 WTY5 棘轮）；Windows 测试机已通过 package smoke 和 RDP 交互 UI smoke |
+| Linux / BSD | 中 | IBus engine / direct insert helper / Fcitx5 后续可选 | 已有 IBus engine、wrapper、direct insert helper 和远程 smoke 脚本（含 WTY5 棘轮）；Linux 测试机已通过 CLI、IBus self-test、Xvfb/GTK Entry UI smoke 和富文本 direct insert smoke |
 | Web | 低 | Web 工具或浏览器扩展 | 尚未实现；只承诺后续协议工具，不承诺系统级输入法 |
 
 ## 共享协议层
@@ -18,7 +18,7 @@
 所有平台必须共享以下行为，避免 Android 以外平台产生不兼容密文：
 
 1. `WTY4` envelope：AES-256-GCM、37 字节 header、AAD 绑定 version/type/key-mode/Argon 参数/salt/IV。
-2. `WTY5` envelope：已验证联系人消息优先使用 Double Ratchet；响应方首条前可回退 WTY4 session-key 路径并必须对用户可见。
+2. `WTY5` envelope：已验证联系人消息优先使用 Double Ratchet；拿到发送链前可回退 WTY4 session-key 路径并必须对用户可见。header 48 字节，前 8 字节为会话 epoch：收到更新的 epoch 必须重新自举（对端重置），收到已退休的 epoch 必须拒绝（防重放），并必须提供"重置加密会话"入口。**任何实现 WTY5 加密的平台都必须同时实现解密**，否则会出现"对方验证了你、于是你再也收不到 TA 的消息"。
 3. 旧格式解密：继续兼容 `WTY1:` / `WTY2:` / `WTY3:` 文本载荷。
 4. 密钥路径：共享密钥模式使用 Argon2id；联系人 fallback 使用 X25519 + HKDF-SHA256。
 5. 身份码：`WTYID1|<name>|<base64-public-key>`。
@@ -57,7 +57,7 @@ Android 与 `shared-protocol` 已共享测试向量；后续平台必须以 shar
 
 ### P2: 桌面文本优先
 
-- macOS/Windows/Linux 第一版只承诺普通文本输入和 `WTY4:` 密文文本直接插入当前光标/选区；联系人 WTY5 需要平台侧身份/联系人状态接入后再启用。
+- Windows/Linux CLI 已支持完整 WTY1–5（含棘轮，会话存于 `--state` 文件）；输入桥侧第一版只承诺普通文本输入和密文文本直接插入当前光标/选区。macOS 仍待 crypto backend 接入。
 - 桌面端不能把复制/粘贴作为富文本主链路；Windows 需要 TSF 或不抢焦点的直接插入 helper，Linux 需要 IBus/Fcitx `commit_text`，macOS 需要 InputMethodKit `insertText`。
 - QR 图片生成、解密、身份管理放在伴随设置 App；如果平台支持内容插入则直接插入当前位置，否则走系统分享/拖放，不把剪贴板作为默认动作。
 - 平台输入法只调用共享协议层，不单独实现密码学。

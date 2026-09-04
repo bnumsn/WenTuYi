@@ -50,6 +50,8 @@ class DecryptActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Sweep any decrypted-plaintext PNG whose short TTL has expired.
+        ImageStore.pruneNow(this)
         buildUi()
         handleIncomingIntent(intent)
     }

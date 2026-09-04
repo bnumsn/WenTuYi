@@ -189,7 +189,7 @@ class ScreenDecryptService : Service() {
                     ScreenDecryptResult.Text(result.payload.text())
                 } else {
                     val decoded = BitmapUtils.decodeImageBytes(result.payload.data)
-                    val uri = ImageStore.savePng(this, decoded)
+                    val uri = ImageStore.saveDecryptedPng(this, decoded)
                     ScreenDecryptResult.Image(uri)
                 }
             }

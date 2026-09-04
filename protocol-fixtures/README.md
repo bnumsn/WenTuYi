@@ -3,11 +3,19 @@
 Canonical, cross-platform **decrypt** test vectors for the Wentuyi wire protocols
 (`WTY3` / `WTY4`, both passphrase and X25519-session key modes, text + image + page + chunk).
 
-These exist because the codec is currently implemented **twice** — `:app`
-(`com.wentuyi.app.SecurePayloadCodec`) and `:shared-protocol`
-(`com.wentuyi.protocol.SecurePayloadCodec`) — with no compile-time link between them. This
-directory is the single contract both sides must satisfy, so the implementations cannot drift
-silently (e.g. one side forgets to bind a new header field into the GCM AAD).
+These originally existed because the codec was implemented **twice** — once in `:app` and
+once in `:shared-protocol` — with no compile-time link between them. The `:app` copy has since
+been deleted and the app now delegates to `:shared-protocol`, so the two implementations can no
+longer drift. The vectors are still the contract, for two reasons that outlive the duplication:
+
+1. The `:app` suite decodes them **on a real device**, through Android's own `Base64`, JCE
+   providers and BouncyCastle build — the JVM suite proves the algorithm, this proves the
+   platform agrees with it.
+2. Any future non-JVM port (the Apple shell, a Rust/Go client) has to satisfy exactly these
+   bytes without reading the Kotlin.
+
+Both suites also assert the **negative** case — flipping any single header byte must fail —
+which is what catches "someone added a header field and forgot to bind it into the GCM AAD".
 
 ## Who consumes it
 

@@ -287,10 +287,11 @@ class WentuyiSmokeTests {
         val aliceIsA = DoubleRatchet.isInitiator(a.publicKey, b.publicKey)
         val aliceId = if (aliceIsA) a else b
         val bobId = if (aliceIsA) b else a
-        var alice = DoubleRatchet.initAlice(
-            DoubleRatchet.initialRootKey(aliceId, bobId.publicKey), bobId.publicKey)
-        var bob = DoubleRatchet.initBob(
-            DoubleRatchet.initialRootKey(bobId, aliceId.publicKey), bobId)
+        val epoch = DoubleRatchet.newEpoch()
+        var alice = DoubleRatchet.initSender(
+            DoubleRatchet.initialRootKey(aliceId, bobId.publicKey, epoch), bobId.publicKey, epoch)
+        var bob = DoubleRatchet.initReceiver(
+            DoubleRatchet.initialRootKey(bobId, aliceId.publicKey, epoch), bobId, epoch)
 
         val m1 = DoubleRatchet.encrypt(alice, "棘轮你好".toByteArray(Charsets.UTF_8))
         assertTrue(m1.startsWith(DoubleRatchet.PREFIX_V5))
@@ -316,10 +317,11 @@ class WentuyiSmokeTests {
         val aFirst = DoubleRatchet.isInitiator(a.publicKey, b.publicKey)
         val aliceId = if (aFirst) a else b
         val bobId = if (aFirst) b else a
-        val alice = DoubleRatchet.initAlice(
-            DoubleRatchet.initialRootKey(aliceId, bobId.publicKey), bobId.publicKey)
-        var bob = DoubleRatchet.initBob(
-            DoubleRatchet.initialRootKey(bobId, aliceId.publicKey), bobId)
+        val epoch = DoubleRatchet.newEpoch()
+        val alice = DoubleRatchet.initSender(
+            DoubleRatchet.initialRootKey(aliceId, bobId.publicKey, epoch), bobId.publicKey, epoch)
+        var bob = DoubleRatchet.initReceiver(
+            DoubleRatchet.initialRootKey(bobId, aliceId.publicKey, epoch), bobId, epoch)
 
         val m = (0 until 4).map { DoubleRatchet.encrypt(alice, "m$it".toByteArray()) }
         bob = DoubleRatchet.deserialize(DoubleRatchet.serialize(bob))
@@ -332,6 +334,138 @@ class WentuyiSmokeTests {
         assertEquals("ok", String(DoubleRatchet.decrypt(alice2, r)))
     }
 
+    @Test fun contacts_blob_migrates_to_keystore_and_rejects_tampering() {
+        // The contact list carries each peer's public key and their `verified` flag — the
+        // whole trust root, since the SAS users compare out-of-band is derived from the
+        // stored key. It used to sit in SharedPreferences as plaintext, so anyone able to
+        // write that file could swap in their own key, set verified, and MITM silently.
+        // Mirrors WentuyiSettings' private constants on purpose: this test asserts the
+        // on-disk shape, which is exactly what an attacker would be editing.
+        val prefs = context.applicationContext
+            .getSharedPreferences("wentuyi_settings", Context.MODE_PRIVATE)
+        val original = prefs.getString("contacts_json", null)
+        try {
+            val peer = generateIdentity()
+            val plain = "[{\"name\":\"legacy\",\"publicKey\":\"" +
+                Base64.encodeToString(peer.publicKey, Base64.NO_WRAP or Base64.URL_SAFE) +
+                "\",\"verified\":true}]"
+
+            // 1. A pre-v0.6.1 plaintext list is still readable, and gets re-stored wrapped.
+            prefs.edit().putString("contacts_json", plain).commit()
+            assertEquals(plain, WentuyiSettings.getContactsJson(context))
+            val migrated = prefs.getString("contacts_json", null)
+            assertNotNull(migrated)
+            assertTrue("plaintext contact list must not survive a read",
+                migrated!!.startsWith("KS2:") || migrated.startsWith("KS1:"))
+            assertEquals("wrapping must not change what is read back",
+                plain, WentuyiSettings.getContactsJson(context))
+
+            // 2. Flipping a byte of the wrapped blob must fail the GCM tag, not be trusted.
+            val body = migrated.substringAfter(':')
+            val raw = Base64.decode(body, Base64.NO_WRAP)
+            raw[raw.size - 1] = (raw[raw.size - 1].toInt() xor 0x01).toByte()
+            prefs.edit().putString(
+                "contacts_json", "KS2:" + Base64.encodeToString(raw, Base64.NO_WRAP)).commit()
+            try {
+                WentuyiSettings.getContactsJson(context)
+                fail("tampered contact list must not be accepted")
+            } catch (e: IllegalStateException) {
+                // fail-closed as intended — and NOT silently degraded to "[]"
+            }
+        } finally {
+            prefs.edit().apply {
+                if (original == null) remove("contacts_json") else putString("contacts_json", original)
+            }.commit()
+        }
+    }
+
+    @Test fun ratchet_session_recovers_after_peer_loses_state() {
+        // The regression that motivated session epochs, exercised through the *persistence*
+        // layer users actually hit: before epochs, a peer who reinstalled restarted from the
+        // same deterministic root key while ours had advanced, and every later message in
+        // both directions failed forever with no way to tell that from "corrupt".
+        //
+        // "We" are the device identity; the peer is simulated in-process with the raw ratchet.
+        val ctx = context
+        val me = KeyExchange.getOrCreateIdentity(ctx)
+        val peer = generateIdentity()
+        val contact = KeyExchange.Contact("epoch-peer", peer.publicKey, verified = true)
+        KeyExchange.removeContact(ctx, contact.fingerprint)  // clear state left by a crashed run
+        KeyExchange.saveContact(ctx, contact)
+        try {
+            // Peer opens a session and we adopt it (path B on a contact we hold no state for).
+            val epoch1 = DoubleRatchet.newEpoch()
+            val peerSend1 = DoubleRatchet.initSender(
+                DoubleRatchet.initialRootKey(peer, me.publicKey, epoch1), me.publicKey, epoch1)
+            val first = DoubleRatchet.encrypt(peerSend1, "第一条".toByteArray(Charsets.UTF_8))
+            val got1 = RatchetSession.tryDecrypt(ctx, me, contact, first)
+            assertTrue("first message adopted", got1 is RatchetSession.Attempt.Ok)
+            assertEquals("第一条",
+                String((got1 as RatchetSession.Attempt.Ok).plaintext, Charsets.UTF_8))
+
+            // We reply, so both chains have advanced past the bootstrap root key.
+            val reply = RatchetSession.encryptText(ctx, me, contact, "收到")
+            assertNotNull("reply must use the ratchet", reply)
+            assertEquals("收到", String(DoubleRatchet.decrypt(peerSend1, reply!!), Charsets.UTF_8))
+
+            // The peer now loses everything and re-bootstraps from their identity backup
+            // under a NEW epoch. Pre-fix this message was undecryptable forever.
+            val epoch2 = epoch1 + 60_000L
+            val peerSend2 = DoubleRatchet.initSender(
+                DoubleRatchet.initialRootKey(peer, me.publicKey, epoch2), me.publicKey, epoch2)
+            val revived = DoubleRatchet.encrypt(peerSend2, "我重装了".toByteArray(Charsets.UTF_8))
+            val got2 = RatchetSession.tryDecrypt(ctx, me, contact, revived)
+            assertTrue("newer epoch is adopted automatically", got2 is RatchetSession.Attempt.Ok)
+            assertEquals("我重装了",
+                String((got2 as RatchetSession.Attempt.Ok).plaintext, Charsets.UTF_8))
+
+            // The revived session is a working two-way ratchet, not a one-shot.
+            val reply2 = RatchetSession.encryptText(ctx, me, contact, "欢迎回来")
+            assertNotNull(reply2)
+            assertEquals("欢迎回来",
+                String(DoubleRatchet.decrypt(peerSend2, reply2!!), Charsets.UTF_8))
+
+            // A retired epoch must NOT be adoptable again — otherwise ciphertext from a dead
+            // session could be replayed back into the live one.
+            val stale = DoubleRatchet.encrypt(peerSend1, "旧会话重放".toByteArray(Charsets.UTF_8))
+            assertTrue("stale epoch refused",
+                RatchetSession.tryDecrypt(ctx, me, contact, stale) is RatchetSession.Attempt.OutOfSync)
+
+            // And a live session still decrypts normally after all that.
+            val after = DoubleRatchet.encrypt(peerSend2, "还在".toByteArray(Charsets.UTF_8))
+            val got3 = RatchetSession.tryDecrypt(ctx, me, contact, after)
+            assertEquals("还在",
+                String((got3 as RatchetSession.Attempt.Ok).plaintext, Charsets.UTF_8))
+        } finally {
+            KeyExchange.removeContact(ctx, contact.fingerprint)
+        }
+    }
+
+    @Test fun ratchet_restart_opens_a_newer_epoch_the_peer_can_adopt() {
+        // The other direction: *we* lost our state, so we hit "重置加密会话". The peer must be
+        // able to adopt what we then send without doing anything themselves.
+        val ctx = context
+        val me = KeyExchange.getOrCreateIdentity(ctx)
+        val peer = generateIdentity()
+        val contact = KeyExchange.Contact("restart-peer", peer.publicKey, verified = true)
+        KeyExchange.removeContact(ctx, contact.fingerprint)  // clear state left by a crashed run
+        KeyExchange.saveContact(ctx, contact)
+        try {
+            RatchetSession.restart(ctx, me, contact)
+            val payload = RatchetSession.encryptText(ctx, me, contact, "重置后的第一条")
+            assertNotNull("restart must leave us with a sending chain", payload)
+            val epoch = DoubleRatchet.peekEpoch(payload)
+            assertNotNull("payload carries an epoch", epoch)
+
+            val peerRecv = DoubleRatchet.initReceiver(
+                DoubleRatchet.initialRootKey(peer, me.publicKey, epoch!!), peer, epoch)
+            assertEquals("重置后的第一条",
+                String(DoubleRatchet.decrypt(peerRecv, payload!!), Charsets.UTF_8))
+        } finally {
+            KeyExchange.removeContact(ctx, contact.fingerprint)
+        }
+    }
+
     @Test fun ratchet_qr_payload_round_trip() {
         // WTY5 ratchet payload → QR → read back → ratchet decrypt (end-to-end QR path).
         val a = KeyExchange.getOrCreateIdentity(context)
@@ -339,10 +473,11 @@ class WentuyiSmokeTests {
         val aliceIsA = DoubleRatchet.isInitiator(a.publicKey, b.publicKey)
         val aliceId = if (aliceIsA) a else b
         val bobId = if (aliceIsA) b else a
-        val alice = DoubleRatchet.initAlice(
-            DoubleRatchet.initialRootKey(aliceId, bobId.publicKey), bobId.publicKey)
-        val bob = DoubleRatchet.initBob(
-            DoubleRatchet.initialRootKey(bobId, aliceId.publicKey), bobId)
+        val epoch = DoubleRatchet.newEpoch()
+        val alice = DoubleRatchet.initSender(
+            DoubleRatchet.initialRootKey(aliceId, bobId.publicKey, epoch), bobId.publicKey, epoch)
+        val bob = DoubleRatchet.initReceiver(
+            DoubleRatchet.initialRootKey(bobId, aliceId.publicKey, epoch), bobId, epoch)
         val payload = DoubleRatchet.encrypt(alice, "二维码棘轮消息".toByteArray(Charsets.UTF_8))
         assertTrue(payload.startsWith(DoubleRatchet.PREFIX_V5))
 

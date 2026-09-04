@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  protocol:
+    # The crypto core is pure JVM and runs in seconds — it is the most valuable thing to
+    # guard, so it gets its own job and fails fast without waiting on the Android toolchain.
+    name: 协议核心 (JVM 单测)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: shared-protocol 单元测试
+        run: ./gradlew :shared-protocol:test
+      - name: desktop-cli 构建
+        run: ./gradlew :desktop-cli:build
+      - name: CLI 端到端冒烟（WTY4 + WTY5 棘轮 + 失步恢复）
+        run: ./scripts/cli-smoke.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: protocol-test-report
+          path: shared-protocol/build/reports/tests/test
+          if-no-files-found: ignore
+
+  android:
+    # No emulator here: connectedDebugAndroidTest needs a device and is run manually
+    # (see README). This job guarantees the app and its instrumentation suite still
+    # *compile*, which is what silently rots when the protocol layer changes.
+    name: Android (编译 + lint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+      - name: assembleDebug
+        run: ./gradlew :app:assembleDebug
+      - name: 编译 instrumentation 套件
+        run: ./gradlew :app:assembleDebugAndroidTest
+      - name: lint
+        run: ./gradlew :app:lintDebug
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-lint-report
+          path: app/build/reports/lint-results-debug.html
+          if-no-files-found: ignore

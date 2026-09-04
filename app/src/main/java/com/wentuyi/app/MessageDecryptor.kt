@@ -26,7 +26,12 @@ object MessageDecryptor {
             val sender: KeyExchange.Contact?,
         ) : Result()
 
-        data class Failure(val reason: Reason, val message: String) : Result()
+        data class Failure(
+            val reason: Reason,
+            val message: String,
+            /** Set for [Reason.RATCHET_OUT_OF_SYNC]: the contact whose session to restart. */
+            val contact: KeyExchange.Contact? = null,
+        ) : Result()
     }
 
     enum class Reason {
@@ -36,6 +41,7 @@ object MessageDecryptor {
         CONTACT_NOT_FOUND,     // SESSION_KEY mode and no contact matches
         NO_CONTACTS,           // SESSION_KEY mode but user has no contacts saved
         NO_IDENTITY,           // SESSION_KEY but the user hasn't generated an identity
+        RATCHET_OUT_OF_SYNC,   // WTY5 from a known contact naming a session we can't adopt
         OTHER,
     }
 
@@ -69,12 +75,33 @@ object MessageDecryptor {
             return Result.Failure(Reason.NO_IDENTITY, "身份密钥读取失败：${e.message}")
         } ?: return Result.Failure(Reason.NO_IDENTITY, "收到棘轮加密消息，但你还没生成身份码")
 
-        val contacts = KeyExchange.listContacts(context)
+        val contacts = try {
+            KeyExchange.listContacts(context)
+        } catch (e: Exception) {
+            return Result.Failure(Reason.OTHER, e.message ?: "联系人列表读取失败")
+        }
         if (contacts.isEmpty()) return Result.Failure(Reason.NO_CONTACTS, "棘轮加密消息需要先扫码加好友")
 
+        // A contact whose session we recognise but can't follow. Remembered rather than
+        // returned immediately, because a *later* contact may still decrypt this message
+        // outright — only report the desync if nobody succeeds.
+        var desynced: KeyExchange.Contact? = null
         for (contact in contacts) {
-            val plain = RatchetSession.tryDecrypt(context, identity, contact, payload) ?: continue
-            return Result.Success(SecurePayloadCodec.textPayload(plain), contact)
+            when (val attempt = RatchetSession.tryDecrypt(context, identity, contact, payload)) {
+                is RatchetSession.Attempt.Ok ->
+                    return Result.Success(
+                        SecurePayloadCodec.textPayload(attempt.plaintext), contact)
+                RatchetSession.Attempt.OutOfSync -> if (desynced == null) desynced = contact
+                RatchetSession.Attempt.NotForUs -> Unit
+            }
+        }
+        desynced?.let {
+            return Result.Failure(
+                Reason.RATCHET_OUT_OF_SYNC,
+                "与「${it.name}」的加密会话已失步（多半是任一方重装或清过数据）。" +
+                    "在「密钥管理」里对该联系人「重置加密会话」，然后给对方发一条消息即可自动恢复。",
+                it,
+            )
         }
         return Result.Failure(Reason.CONTACT_NOT_FOUND,
             "试遍 ${contacts.size} 位联系人都无法解密 — 也许对方还没把你加为联系人，或消息损坏")
@@ -108,7 +135,11 @@ object MessageDecryptor {
         } ?: return Result.Failure(Reason.NO_IDENTITY,
             "收到对方会话加密的消息，但你还没生成身份码")
 
-        val contacts = KeyExchange.listContacts(context)
+        val contacts = try {
+            KeyExchange.listContacts(context)
+        } catch (e: Exception) {
+            return Result.Failure(Reason.OTHER, e.message ?: "联系人列表读取失败")
+        }
         if (contacts.isEmpty()) return Result.Failure(Reason.NO_CONTACTS,
             "会话加密消息需要先扫码加好友")
 

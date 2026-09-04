@@ -16,13 +16,22 @@ import javax.crypto.spec.SecretKeySpec
  *  - The initial root key is `HKDF(ECDH(identityA, identityB))` — it reuses the X25519
  *    identity keys the two peers already exchanged-by-QR and verified with the SAS, so no
  *    new handshake is needed.
- *  - Roles are assigned deterministically by public-key order (lower = Alice/initiator),
- *    and Bob's *initial* ratchet keypair is his identity keypair (the only key Alice has
- *    for him). PFS is therefore complete only after Bob's first reply rotates that key —
- *    same caveat as Signal without prekeys; documented, not hidden.
+ *  - Roles are **per epoch**: whoever bootstraps a sending chain is that epoch's sender,
+ *    and the peer's *initial* ratchet keypair is its identity keypair (the only key the
+ *    sender has for it). PFS is therefore complete only after the receiver's first reply
+ *    rotates that key — same caveat as Signal without prekeys; documented, not hidden.
+ *    [isInitiator] only breaks the tie for who opens the *first* epoch on a fresh contact,
+ *    so two peers adding each other at once don't both open one.
  *  - No header encryption: the sender's current ratchet public key + counters are visible
  *    in the WTY5 envelope. (Sender *identity* is NOT in the envelope — the receiver trial-
  *    decrypts against each contact's state, so ciphertext never reveals "who sent this".)
+ *  - **Session epoch**: the envelope carries the 8-byte epoch that seeded the root key.
+ *    Without it a peer who lost their state (reinstall, clear-data, restore-from-backup-code)
+ *    would restart from the same deterministic root key while the other side's root key had
+ *    already advanced — every later message would fail the AEAD forever, with no way for
+ *    either side to tell "session was reset" apart from "corrupt/not for me". With it the
+ *    receiver sees an unknown-but-newer epoch and re-bootstraps automatically. See
+ *    [peekEpoch] / [EpochMismatch].
  *
  * Message keys are single-use and derived (key‖iv) from the chain via HKDF, so a leaked
  * long-term key can't recover past message keys — the chain keys that produced them are
@@ -42,7 +51,8 @@ object DoubleRatchet {
     private const val MAX_SKIP = 1000            // bound on skipped keys per single chain step
     private const val MAX_SKIP_TOTAL = 2000      // global cap on the persisted skipped-key cache
     private const val MAX_PAYLOAD_CHARS = 512 * 1024  // reject absurd inputs before decoding
-    private const val HEADER_LEN = 32 + 4 + 4    // ratchetPub(32) + PN(4) + N(4)
+    private const val EPOCH_BYTES = 8
+    private const val HEADER_LEN = EPOCH_BYTES + 32 + 4 + 4  // epoch(8) + ratchetPub(32) + PN(4) + N(4)
 
     private val INFO_INIT = "WTY5-root-init".toByteArray(StandardCharsets.US_ASCII)
     private val INFO_ROOT = "WTY5-root".toByteArray(StandardCharsets.US_ASCII)
@@ -52,6 +62,8 @@ object DoubleRatchet {
     private val ZERO_SALT = ByteArray(KEY_BYTES)
 
     class State(
+        /** Identifies which bootstrap this chain descends from; see [newEpoch]. */
+        var epoch: Long,
         var rk: ByteArray,
         var dhsPub: ByteArray,
         var dhsPriv: ByteArray,
@@ -64,24 +76,57 @@ object DoubleRatchet {
         val skipped: MutableMap<String, ByteArray> = LinkedHashMap(),
     )
 
-    /** Deterministic initial root key from the two verified X25519 identity keys. */
-    fun initialRootKey(selfIdentity: KeyExchange.Identity, peerIdentityPub: ByteArray): ByteArray {
+    /**
+     * A fresh session epoch. Wall-clock millis, so a peer that reinstalled and lost its
+     * state still produces an epoch that sorts *after* the one the other side remembers —
+     * which is exactly the signal [decryptOn] needs to tell "they reset" apart from
+     * "garbage". Epochs are minted at most once per bootstrap (days/months apart), so
+     * ordinary clock skew is irrelevant; only a clock set far into the past would produce
+     * an epoch the peer rejects as stale.
+     */
+    fun newEpoch(): Long = System.currentTimeMillis()
+
+    /** Thrown when a WTY5 header names a different session than [State.epoch] holds. */
+    class EpochMismatch(val headerEpoch: Long, val stateEpoch: Long) :
+        GeneralSecurityException("棘轮会话不匹配 (header=$headerEpoch, state=$stateEpoch)")
+
+    /**
+     * Deterministic initial root key for [epoch], from the two verified X25519 identity
+     * keys. The epoch is the HKDF salt, so a re-bootstrap under a new epoch yields a root
+     * key unrelated to the old session's.
+     */
+    fun initialRootKey(
+        selfIdentity: KeyExchange.Identity,
+        peerIdentityPub: ByteArray,
+        epoch: Long,
+    ): ByteArray {
         val dh = KeyExchange.ecdh(selfIdentity.privateKey, peerIdentityPub)
         try {
-            return CryptoUtils.hkdfSha256(dh, ZERO_SALT, INFO_INIT, KEY_BYTES)
+            return CryptoUtils.hkdfSha256(dh, epochBytes(epoch), INFO_INIT, KEY_BYTES)
         } finally {
             CryptoUtils.wipe(dh)
         }
+    }
+
+    /** Reads the session epoch out of a WTY5 envelope without any key material. */
+    fun peekEpoch(payload: String?): Long? {
+        if (payload == null || !payload.startsWith(PREFIX_V5)) return null
+        if (payload.length > MAX_PAYLOAD_CHARS) return null
+        val raw = try { Encoding.b64Decode(payload.substring(PREFIX_V5.length)) }
+            catch (e: IllegalArgumentException) { return null }
+        if (raw.size <= HEADER_LEN) return null
+        return readLong(raw, 0)
     }
 
     /** Lower public key = Alice (initiator). Both peers compute the same role. */
     fun isInitiator(selfIdentityPub: ByteArray, peerIdentityPub: ByteArray): Boolean =
         compareBytes(selfIdentityPub, peerIdentityPub) < 0
 
-    /** Initiator-side init: starts a sending chain against the peer's identity key. */
-    fun initAlice(rootKey: ByteArray, peerIdentityPub: ByteArray): State {
+    /** Sender-side init for [epoch]: starts a sending chain against the peer's identity key. */
+    fun initSender(rootKey: ByteArray, peerIdentityPub: ByteArray, epoch: Long): State {
         val dhs = KeyExchange.generateIdentity()
         val st = State(
+            epoch = epoch,
             rk = rootKey.copyOf(), dhsPub = dhs.publicKey, dhsPriv = dhs.privateKey,
             dhr = peerIdentityPub.copyOf(), cks = null, ckr = null,
         )
@@ -93,9 +138,10 @@ object DoubleRatchet {
         return st
     }
 
-    /** Responder-side init: its initial ratchet keypair is its identity keypair. */
-    fun initBob(rootKey: ByteArray, selfIdentity: KeyExchange.Identity): State =
+    /** Receiver-side init for [epoch]: its initial ratchet keypair is its identity keypair. */
+    fun initReceiver(rootKey: ByteArray, selfIdentity: KeyExchange.Identity, epoch: Long): State =
         State(
+            epoch = epoch,
             rk = rootKey.copyOf(),
             dhsPub = selfIdentity.publicKey.copyOf(),
             dhsPriv = selfIdentity.privateKey.copyOf(),
@@ -107,7 +153,7 @@ object DoubleRatchet {
     fun encrypt(state: State, plaintext: ByteArray): String {
         val cks = state.cks ?: throw GeneralSecurityException("棘轮发送链未建立")
         val (newCks, mk) = kdfChain(cks)
-        val header = packHeader(state.dhsPub, state.pn, state.ns)
+        val header = packHeader(state.epoch, state.dhsPub, state.pn, state.ns)
         try {
             val ct = aeadEncrypt(mk, plaintext, header)
             CryptoUtils.wipe(state.cks)  // old sending chain key is now superseded
@@ -138,6 +184,7 @@ object DoubleRatchet {
         CryptoUtils.wipe(dst.cks); CryptoUtils.wipe(dst.ckr)
         dst.skipped.values.forEach { CryptoUtils.wipe(it) }
         dst.skipped.clear(); dst.skipped.putAll(src.skipped)
+        dst.epoch = src.epoch
         dst.rk = src.rk; dst.dhsPub = src.dhsPub; dst.dhsPriv = src.dhsPriv
         dst.dhr = src.dhr; dst.cks = src.cks; dst.ckr = src.ckr
         dst.ns = src.ns; dst.nr = src.nr; dst.pn = src.pn
@@ -150,9 +197,14 @@ object DoubleRatchet {
         if (raw.size <= HEADER_LEN) throw GeneralSecurityException("棘轮密文不完整")
         val header = Arrays.copyOfRange(raw, 0, HEADER_LEN)
         val ct = Arrays.copyOfRange(raw, HEADER_LEN, raw.size)
-        val dhr = Arrays.copyOfRange(header, 0, 32)
-        val pn = readInt(header, 32)
-        val n = readInt(header, 36)
+        val epoch = readLong(header, 0)
+        // A message from a different bootstrap can never decrypt under this state's chains.
+        // Surface it as a *typed* failure so the caller can re-bootstrap instead of showing
+        // the user an indistinguishable "decrypt failed" forever.
+        if (epoch != state.epoch) throw EpochMismatch(epoch, state.epoch)
+        val dhr = Arrays.copyOfRange(header, EPOCH_BYTES, EPOCH_BYTES + 32)
+        val pn = readInt(header, EPOCH_BYTES + 32)
+        val n = readInt(header, EPOCH_BYTES + 36)
 
         // 1. A skipped (out-of-order) message we already cached a key for.
         val skipId = skipKey(dhr, n)
@@ -270,18 +322,33 @@ object DoubleRatchet {
 
     /** Deep copy for non-destructive trial decryption across contacts. */
     fun clone(s: State): State = State(
+        epoch = s.epoch,
         rk = s.rk.copyOf(), dhsPub = s.dhsPub.copyOf(), dhsPriv = s.dhsPriv.copyOf(),
         dhr = s.dhr?.copyOf(), cks = s.cks?.copyOf(), ckr = s.ckr?.copyOf(),
         ns = s.ns, nr = s.nr, pn = s.pn,
         skipped = LinkedHashMap(s.skipped.mapValues { it.value.copyOf() }),
     )
 
-    private fun packHeader(ratchetPub: ByteArray, pn: Int, n: Int): ByteArray {
+    private fun packHeader(epoch: Long, ratchetPub: ByteArray, pn: Int, n: Int): ByteArray {
         val h = ByteArray(HEADER_LEN)
-        System.arraycopy(ratchetPub, 0, h, 0, 32)
-        writeInt(h, 32, pn)
-        writeInt(h, 36, n)
+        writeLong(h, 0, epoch)
+        System.arraycopy(ratchetPub, 0, h, EPOCH_BYTES, 32)
+        writeInt(h, EPOCH_BYTES + 32, pn)
+        writeInt(h, EPOCH_BYTES + 36, n)
         return h
+    }
+
+    private fun epochBytes(epoch: Long): ByteArray =
+        ByteArray(EPOCH_BYTES).also { writeLong(it, 0, epoch) }
+
+    private fun writeLong(t: ByteArray, off: Int, v: Long) {
+        for (i in 0 until 8) t[off + i] = (v ushr (56 - 8 * i)).toByte()
+    }
+
+    private fun readLong(s: ByteArray, off: Int): Long {
+        var v = 0L
+        for (i in 0 until 8) v = (v shl 8) or (s[off + i].toLong() and 0xFF)
+        return v
     }
 
     private fun skipKey(dhr: ByteArray, n: Int): String =
