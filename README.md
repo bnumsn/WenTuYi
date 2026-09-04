@@ -159,6 +159,19 @@ Release 构建启用 R8 压缩混淆：
 ./gradlew :app:assembleRelease
 ```
 
+**签名**：真钥匙放 `app/keystore.properties`（已 gitignore）或同名环境变量：
+
+```properties
+storeFile=/path/to/release.jks
+storePassword=...
+keyAlias=wentuyi
+keyPassword=...
+```
+
+未配置时**回落到 debug 密钥**——这样 R8 构建至少是可安装、可测试的（BouncyCastle 与 ZXing 靠反射进入，压缩混淆确实可能把它们打断，不能只靠"编译通过"）。debug 签名的包仅供测试，不可正式分发。
+
+**发布**：推 `v*` tag 触发 `.github/workflows/release.yml`，在干净检出上先跑一遍协议单测 / CLI 冒烟 / 主题守卫 / lint，然后构建并附上 release APK、debug APK、桌面 CLI zip 和 `SHA256SUMS.txt`。仓库配置了 `WENTUYI_KEYSTORE_BASE64` 等 secret 时用正式密钥签名，否则 release 说明里会明确标注是 debug 签名。
+
 安装到已连接设备：
 
 ```bash

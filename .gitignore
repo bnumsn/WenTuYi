@@ -11,3 +11,8 @@ local.properties
 /*.peek.stderr
 /wentuyi-*.out
 /wentuyi-win-ver.txt
+
+# Release signing — the key must never enter git.
+app/keystore.properties
+*.jks
+*.keystore

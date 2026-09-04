@@ -1,0 +1,97 @@
+name: Release
+
+# Tag-driven: pushing v* builds the APKs from a clean checkout and attaches them to a
+# GitHub Release. Building in CI rather than uploading a local file is deliberate — it
+# proves the tag actually builds from what is committed.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build and release"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: 构建并发布 APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+
+      # Gate the release on the same checks main runs, so a tag can never ship something
+      # that would have failed CI.
+      - name: 协议核心单测
+        run: ./gradlew :shared-protocol:test
+      - name: CLI 端到端冒烟
+        run: ./scripts/cli-smoke.sh
+      - name: 主题守卫
+        run: ./scripts/check-theming.sh
+      - name: lint
+        run: ./gradlew :app:lintDebug
+
+      # WENTUYI_KEYSTORE* secrets, when configured, sign with the project's own key.
+      # Without them app/build.gradle.kts falls back to the debug key: still installable
+      # for testing, not fit for distribution. The release notes say which one it was.
+      - name: 还原签名密钥（若已配置 secret）
+        id: signing
+        env:
+          KEYSTORE_B64: ${{ secrets.WENTUYI_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            echo "keystore=$RUNNER_TEMP/release.jks" >> "$GITHUB_OUTPUT"
+            echo "signed=release" >> "$GITHUB_OUTPUT"
+          else
+            echo "signed=debug" >> "$GITHUB_OUTPUT"
+            echo "::warning::No WENTUYI_KEYSTORE_BASE64 secret; the APK will be debug-signed (testing only)."
+          fi
+
+      - name: 构建 release APK
+        env:
+          WENTUYI_KEYSTORE: ${{ steps.signing.outputs.keystore }}
+          WENTUYI_KEYSTORE_PASSWORD: ${{ secrets.WENTUYI_KEYSTORE_PASSWORD }}
+          WENTUYI_KEY_ALIAS: ${{ secrets.WENTUYI_KEY_ALIAS }}
+          WENTUYI_KEY_PASSWORD: ${{ secrets.WENTUYI_KEY_PASSWORD }}
+        run: ./gradlew :app:assembleRelease
+
+      - name: 构建 debug APK 与桌面 CLI
+        run: ./gradlew :app:assembleDebug :desktop-cli:distZip
+
+      - name: 整理产物
+        id: stage
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          mkdir -p dist
+          cp app/build/outputs/apk/release/app-release.apk "dist/wentuyi-$TAG.apk"
+          cp app/build/outputs/apk/debug/app-debug.apk     "dist/wentuyi-$TAG-debug.apk"
+          cp desktop-cli/build/distributions/*.zip          "dist/wentuyi-desktop-cli-$TAG.zip"
+          ( cd dist && sha256sum * > SHA256SUMS.txt )
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          ls -l dist
+
+      - name: 发布
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.stage.outputs.tag }}"
+          SIGNED="${{ steps.signing.outputs.signed }}"
+          if [ "$SIGNED" = "debug" ]; then
+            NOTE=$'> ⚠ 本次 release APK 使用 **debug 密钥**签名（仓库尚未配置 `WENTUYI_KEYSTORE_BASE64` 等 secret）。\n> 可安装、可测试，但**不可用于正式分发**；配置签名 secret 后重新打 tag 即为正式签名。'
+          else
+            NOTE='本次 release APK 使用仓库配置的正式签名密钥。'
+          fi
+          printf '%s\n\n### 产物\n- `wentuyi-%s.apk` — Android release 构建（R8 压缩混淆）\n- `wentuyi-%s-debug.apk` — debug 构建（含键盘本地测试页）\n- `wentuyi-desktop-cli-%s.zip` — Windows/Linux 协议 CLI\n- `SHA256SUMS.txt`\n\n完整改动见 README 的版本修复记录。\n' \
+            "$NOTE" "$TAG" "$TAG" "$TAG" > notes.md
+          gh release create "$TAG" dist/* --title "文图易 $TAG" --notes-file notes.md
