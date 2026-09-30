@@ -4,11 +4,11 @@ import com.wentuyi.protocol.DoubleRatchet
 import com.wentuyi.protocol.Encoding
 import com.wentuyi.protocol.KeyExchange
 import com.wentuyi.protocol.PayloadChunks
-import com.wentuyi.protocol.RatchetStateCodec
+import com.wentuyi.protocol.PayloadLimits
 import com.wentuyi.protocol.SecurePayloadCodec
+import java.io.InputStream
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.attribute.PosixFilePermission
 
 fun main(args: Array<String>) {
     // Force UTF-8 stdout/stderr on every platform. On Windows the default System.out uses the
@@ -38,8 +38,8 @@ private fun run(args: List<String>) {
         }
         "decrypt-text" -> {
             val passphrase = resolvePassphrase(args)
-            val payload = resolveText(args.drop(1), setOf("--passphrase"))
-            println(SecurePayloadCodec.decryptPayload(payload, passphrase))
+            val payload = resolvePayload(args.drop(1), setOf("--passphrase"))
+            print(SecurePayloadCodec.decryptPayload(payload, passphrase))
         }
         "plain-image" -> {
             val out = Path.of(option(args, "--out"))
@@ -57,7 +57,7 @@ private fun run(args: List<String>) {
         "payload-qr" -> {
             val outDir = Path.of(option(args, "--out-dir"))
             val prefix = optionOrNull(args, "--prefix") ?: "wentuyi-qr"
-            val payload = resolveText(args.drop(1), setOf("--out-dir", "--prefix"))
+            val payload = resolvePayload(args.drop(1), setOf("--out-dir", "--prefix"))
             DesktopImageCodec.writePayloadQrImages(payload, outDir, prefix).forEach { println(it.toAbsolutePath()) }
         }
         "gen-identity" -> {
@@ -74,8 +74,7 @@ private fun run(args: List<String>) {
             // env, then --stdin; positional remains as an explicit fallback.
             val backup = System.getenv("WENTUYI_BACKUP")?.takeIf { it.isNotEmpty() }
                 ?: if (args.contains("--stdin")) {
-                    System.`in`.readBytes().toString(Charsets.UTF_8).trim()
-                        .ifEmpty { throw IllegalArgumentException("empty stdin") }
+                    readInputText(System.`in`)
                 } else {
                     args.drop(1).filterNot { it.startsWith("--") }.joinToString("")
                         .ifEmpty { throw IllegalArgumentException("missing backup (WENTUYI_BACKUP / --stdin / WTYB1...)") }
@@ -104,8 +103,8 @@ private fun run(args: List<String>) {
             val identity = KeyExchange.decodeBackup(resolveBackup(args))
             val secret = KeyExchange.deriveSharedSecret(identity, peerPublic(args))
             try {
-                val payload = resolveText(args.drop(1), setOf("--backup", "--peer-public", "--peer-qr"))
-                println(SecurePayloadCodec.decryptEnvelopeWithSessionKey(payload, secret).text())
+                val payload = resolvePayload(args.drop(1), setOf("--backup", "--peer-public", "--peer-qr"))
+                print(SecurePayloadCodec.decryptEnvelopeWithSessionKey(payload, secret).text())
             } finally {
                 com.wentuyi.protocol.CryptoUtils.wipe(secret)
             }
@@ -115,26 +114,33 @@ private fun run(args: List<String>) {
         "whoami" -> ProfileCommands.whoami(Profile.default())
         "import-identity" -> {
             val backup = System.getenv("WENTUYI_BACKUP")?.takeIf { it.isNotEmpty() }
-                ?: resolveText(args.drop(1), emptySet())
+                ?: resolvePayload(args.drop(1), emptySet())
             val identity = Profile.default().importIdentity(backup)
             println("fingerprint=${identity.fingerprint}")
         }
         "set-passphrase" -> {
             val value = System.getenv("WENTUYI_PASSPHRASE")?.takeIf { it.isNotEmpty() }
-                ?: resolveText(args.drop(1), emptySet())
+                ?: resolvePayload(args.drop(1), emptySet())
             Profile.default().setPassphrase(value)
             println("passphrase saved")
         }
         "peer-add" -> {
             val profile = Profile.default()
             val name = option(args, "--name")
-            profile.addPeer(name, peerPublic(args))
-            val identity = runCatching { profile.loadIdentity() }.getOrNull()
-            if (identity != null) {
-                println("sas=${KeyExchange.shortAuthString(identity, profile.peerPublicKey(name))}")
-                System.err.println(
-                    "Compare that 8-digit code with $name out of band before trusting this peer.")
+            profile.transaction {
+                profile.addPeer(name, peerPublic(args))
+                val identity = runCatching { profile.loadIdentity() }.getOrNull()
+                if (identity != null) {
+                    println("sas=${KeyExchange.shortAuthString(identity, profile.peerPublicKey(name))}")
+                    System.err.println(
+                        "Compare the complete 256-bit code with $name using a trusted channel, then run peer-verify.")
+                }
             }
+        }
+        "peer-verify" -> {
+            val name = option(args, "--peer")
+            Profile.default().verifyPeer(name, option(args, "--code"))
+            println("verified=$name authVersion=${KeyExchange.AUTH_VERSION}")
         }
         "peer-list" -> ProfileCommands.peerList(Profile.default())
         "peer-remove" -> Profile.default().removePeer(option(args, "--peer"))
@@ -143,13 +149,16 @@ private fun run(args: List<String>) {
             // message. The escape hatch for "their messages stopped decrypting".
             val profile = Profile.default()
             val name = option(args, "--peer")
-            val identity = profile.loadIdentity()
-            val peer = profile.peerPublicKey(name)
-            val epoch = DoubleRatchet.newEpoch()
-            profile.saveRatchet(name, DoubleRatchet.initSender(
-                DoubleRatchet.initialRootKey(identity, peer, epoch), peer, epoch))
-            println("epoch=$epoch")
-            System.err.println("Now send $name one message to complete the recovery.")
+            profile.transaction {
+                val identity = profile.loadIdentity()
+                profile.requirePeerVerified(name)
+                val peer = profile.peerPublicKey(name)
+                val epoch = DoubleRatchet.newEpoch(profile.epochForReset(name))
+                profile.saveRatchet(name, DoubleRatchet.initSender(
+                    DoubleRatchet.initialRootKey(identity, peer, epoch), peer, epoch))
+                println("epoch=$epoch")
+                System.err.println("Now send $name one message to complete the recovery.")
+            }
         }
         "send" -> {
             val peer = optionOrNull(args, "--peer")
@@ -157,7 +166,7 @@ private fun run(args: List<String>) {
             ProfileCommands.send(Profile.default(), peer, text)
         }
         "receive" -> ProfileCommands.receive(
-            Profile.default(), resolveText(args.drop(1), emptySet()))
+            Profile.default(), resolvePayload(args.drop(1), emptySet()))
 
         // ─── WTY5 Double Ratchet ──────────────────────────────────────────────────
         // The Android app sends WTY5 to every verified contact by default, so without these
@@ -168,54 +177,65 @@ private fun run(args: List<String>) {
         "ratchet-init" -> {
             val identity = KeyExchange.decodeBackup(resolveBackup(args))
             val peer = peerPublic(args)
-            val statePath = Path.of(option(args, "--state"))
-            val epoch = DoubleRatchet.newEpoch()
-            val state = DoubleRatchet.initSender(
-                DoubleRatchet.initialRootKey(identity, peer, epoch), peer, epoch)
-            writeState(statePath, state)
-            println("epoch=$epoch")
-            println("state=${statePath.toAbsolutePath()}")
+            val statePath = statePath(args)
+            SecretFiles.withStateLock(statePath) {
+                val epoch = DoubleRatchet.newEpoch(StoredRatchet.epochForReset(statePath))
+                val state = DoubleRatchet.initSender(
+                    DoubleRatchet.initialRootKey(identity, peer, epoch), peer, epoch)
+                StoredRatchet(identity.publicKey, peer, state).write(statePath)
+                println("epoch=$epoch")
+                println("state=$statePath")
+            }
         }
         "ratchet-encrypt" -> {
-            val statePath = Path.of(option(args, "--state"))
-            val state = readState(statePath)
+            val statePath = statePath(args)
             val text = resolveText(args.drop(1), setOf("--state"))
-            val payload = DoubleRatchet.encrypt(state, text.toByteArray(Charsets.UTF_8))
-            writeState(statePath, state)   // only after encrypt() advanced it
-            println(payload)
+            SecretFiles.withStateLock(statePath) {
+                val stored = readState(statePath)
+                val payload = DoubleRatchet.encrypt(stored.state,
+                    PayloadLimits.utf8Bytes(text, DoubleRatchet.MAX_PLAINTEXT_BYTES))
+                stored.write(statePath)
+                println(payload)
+            }
         }
         "ratchet-decrypt" -> {
             val identity = KeyExchange.decodeBackup(resolveBackup(args))
             val peer = peerPublic(args)
-            val statePath = Path.of(option(args, "--state"))
-            val payload = resolveText(
+            val statePath = statePath(args)
+            val payload = resolvePayload(
                 args.drop(1), setOf("--backup", "--peer-public", "--peer-qr", "--state"))
             val headerEpoch = DoubleRatchet.peekEpoch(payload)
                 ?: throw IllegalArgumentException("not a WTY5 ratchet payload")
-            val stored = if (Files.exists(statePath)) readState(statePath) else null
+            SecretFiles.withStateLock(statePath) {
+                val stored = if (Files.exists(statePath)) {
+                    readState(statePath).also { it.requireIdentities(identity.publicKey, peer) }.state
+                } else null
 
-            // Same three-way rule as the Android app: use the session we hold for this epoch;
-            // adopt a strictly newer one (the peer reset); refuse a retired one so a dead
-            // session's ciphertext can't be replayed into the live one.
-            val state = when {
-                stored != null && stored.epoch == headerEpoch -> stored
-                stored != null && headerEpoch <= stored.epoch ->
-                    throw IllegalStateException(
-                        "ratchet session out of sync (payload epoch $headerEpoch <= local " +
-                            "${stored.epoch}); run ratchet-init to start a fresh session")
-                else -> DoubleRatchet.initReceiver(
-                    DoubleRatchet.initialRootKey(identity, peer, headerEpoch), identity, headerEpoch)
+                // Use the session we hold for this epoch; adopt a strictly newer one
+                // (the peer reset); refuse a retired one to prevent replay.
+                val state = when {
+                    stored != null && stored.epoch == headerEpoch -> stored
+                    stored != null && headerEpoch <= stored.epoch ->
+                        throw IllegalStateException(
+                            "ratchet session out of sync (payload epoch $headerEpoch <= local " +
+                                "${stored.epoch}); run ratchet-init to start a fresh session")
+                    else -> DoubleRatchet.initReceiver(
+                        DoubleRatchet.initialRootKey(identity, peer, headerEpoch), identity, headerEpoch)
+                }
+                val plain = DoubleRatchet.decrypt(state, payload)
+                StoredRatchet(identity.publicKey, peer, state).write(statePath)
+                print(String(plain, Charsets.UTF_8))
             }
-            val plain = DoubleRatchet.decrypt(state, payload)
-            writeState(statePath, state)   // only after the AEAD tag verified
-            println(String(plain, Charsets.UTF_8))
         }
         "ratchet-info" -> {
-            val state = readState(Path.of(option(args, "--state")))
-            println("epoch=${state.epoch}")
-            println("sending=${state.cks != null}")
-            println("receiving=${state.ckr != null}")
-            println("ns=${state.ns} nr=${state.nr} pn=${state.pn} skipped=${state.skipped.size}")
+            val statePath = statePath(args)
+            SecretFiles.withStateLock(statePath) {
+                val state = readState(statePath).state
+                println("epoch=${state.epoch}")
+                println("sending=${state.cks != null}")
+                println("receiving=${state.ckr != null}")
+                println("ns=${state.ns} nr=${state.nr} pn=${state.pn} skipped=${state.skipped.size}")
+            }
         }
 
         "chunk" -> PayloadChunks.chunkPayload(args.drop(1).joinToString(" ")).forEach(::println)
@@ -236,17 +256,27 @@ private fun resolveBackup(args: List<String>): String =
     System.getenv("WENTUYI_BACKUP")?.takeIf { it.isNotEmpty() }
         ?: option(args, "--backup")
 
-/**
- * Text/payload from `--stdin` (read whole stdin, trimmed) when present, else the positional
- * args. stdin keeps plaintext off the command line too — bridges pipe the message in.
- */
+/** Plaintext from stdin is exact: spaces, tabs and trailing newlines are message data. */
 private fun resolveText(args: List<String>, optionNames: Set<String>): String =
-    if (args.contains("--stdin")) {
-        System.`in`.readBytes().toString(Charsets.UTF_8).trim()
-            .ifEmpty { throw IllegalArgumentException("empty stdin") }
-    } else {
-        restAfterOptions(args, optionNames)
-    }
+    if (args.contains("--stdin")) readPlaintext(System.`in`)
+    else restAfterOptions(args, optionNames)
+
+/** Wire payloads and backup codes permit whitespace added by terminals/pipelines. */
+private fun resolvePayload(args: List<String>, optionNames: Set<String>): String =
+    if (args.contains("--stdin")) readInputText(System.`in`)
+    else restAfterOptions(args, optionNames)
+
+/** One maximum-size wire payload plus CRLF; stop before an unbounded allocation. */
+internal fun readPlaintext(input: InputStream): String {
+    val maximum = PayloadLimits.MAX_PAYLOAD_CHARS + 2
+    val bytes = input.readNBytes(maximum + 1)
+    require(bytes.size <= maximum) { "stdin too large (maximum $maximum UTF-8 bytes)" }
+    return bytes.toString(Charsets.UTF_8)
+        .ifEmpty { throw IllegalArgumentException("empty stdin") }
+}
+
+internal fun readInputText(input: InputStream): String = readPlaintext(input).trim()
+    .ifEmpty { throw IllegalArgumentException("empty stdin") }
 
 private fun option(args: List<String>, name: String): String =
     optionOrNull(args, name) ?: throw IllegalArgumentException("missing $name")
@@ -263,18 +293,16 @@ private fun optionOrNull(args: List<String>, name: String): String? {
  * every cached skipped message key). The desktop has no Keystore, so the least we can do is
  * keep the file off other users' eyes — 0600 where the filesystem supports POSIX perms.
  */
-private fun writeState(path: Path, state: DoubleRatchet.State) {
-    path.toAbsolutePath().parent?.let { Files.createDirectories(it) }
-    Files.write(path, RatchetStateCodec.encodeText(state).toByteArray(Charsets.UTF_8))
-    runCatching {
-        Files.setPosixFilePermissions(
-            path, setOf(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE))
-    }  // no-op on filesystems without POSIX perms (Windows)
+private fun statePath(args: List<String>): Path {
+    val path = Path.of(option(args, "--state")).toAbsolutePath().normalize()
+    SecretFiles.createDirectories(path.parent)
+    // A symlink and its target must use the same stable lock and replacement target.
+    return if (Files.exists(path)) path.toRealPath() else path.parent.toRealPath().resolve(path.fileName)
 }
 
-private fun readState(path: Path): DoubleRatchet.State {
+private fun readState(path: Path): StoredRatchet {
     if (!Files.exists(path)) throw IllegalArgumentException("no ratchet state at $path (run ratchet-init)")
-    return RatchetStateCodec.decodeText(Files.readString(path))
+    return StoredRatchet.read(path)
 }
 
 private fun peerPublic(args: List<String>): ByteArray {
@@ -309,6 +337,9 @@ private fun printHelp() {
           WENTUYI_PASSPHRASE  shared key   (else --passphrase KEY)
           WENTUYI_BACKUP      WTYB1 backup (else --backup WTYB1)
         Text/payload via stdin: append --stdin and pipe the message in (else positional).
+        Plaintext whitespace is preserved; decrypted stdout is exact, with no added newline.
+        Stdin accepts at most 512 KiB of UTF-8 plus a trailing CRLF. Encryption checks its
+        smaller protocol byte limit before allocating the plaintext buffer.
 
         Commands:
           encrypt-text --passphrase KEY TEXT
@@ -332,11 +363,13 @@ private fun printHelp() {
           import-identity [WTYB1 | --stdin]       (or WENTUYI_BACKUP env)
           set-passphrase [KEY | --stdin]          shared key for the legacy path
           peer-add --name NAME (--peer-public B64URL | --peer-qr WTYID1)
+          peer-verify --peer NAME --code FULLCODE  after comparing the complete code out of band
           peer-list / peer-remove --peer NAME
           peer-reset --peer NAME                  open a fresh session after a desync
-          send [--peer NAME] TEXT                 ratchet if possible, else session key,
+          send [--peer NAME] TEXT                 verified peer: ratchet if possible, else session key,
                                                   else shared passphrase (no --peer)
-          receive WTY_PAYLOAD                     auto-detects the protocol and the sender
+          receive WTY_PAYLOAD                     auto-detects protocol and verified sender
+        All existing peers need explicit verification after the 256-bit authentication upgrade.
 
         WTY5 Double Ratchet, raw/stateless form (--state FILE holds the session and private
         key material — it is written 0600, treat it like the backup code):
@@ -347,6 +380,8 @@ private fun printHelp() {
         Only one side runs ratchet-init; the other's first ratchet-decrypt bootstraps from
         the epoch in the payload. If the peer resets, their newer epoch is adopted
         automatically; if you lose --state, run ratchet-init again and send one message.
+        State from older CLI versions has no identity binding: reset it with peer-reset
+        (profile) or ratchet-init (raw) once after upgrading; exchange a message to recover.
         """.trimIndent(),
     )
 }

@@ -41,10 +41,11 @@ class ScreenDecryptService : Service() {
         private const val CHANNEL_ID = "screen_decrypt"
         private const val CAPTURE_TIMEOUT_MS = 3500L
 
-        fun start(context: Context, resultCode: Int, data: Intent) {
+        fun start(context: Context, resultCode: Int, data: Intent, requestId: String) {
             val intent = Intent(context, ScreenDecryptService::class.java)
                 .putExtra(EXTRA_RESULT_CODE, resultCode)
                 .putExtra(EXTRA_RESULT_DATA, data)
+                .putExtra(ScreenDecryptActivity.EXTRA_REQUEST_ID, requestId)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
             } else {
@@ -59,6 +60,7 @@ class ScreenDecryptService : Service() {
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
     private var completed = false
+    private var requestId: String? = null
 
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
@@ -70,6 +72,22 @@ class ScreenDecryptService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startAsForeground()
+        val incomingId = intent?.getStringExtra(ScreenDecryptActivity.EXTRA_REQUEST_ID)
+        // A second start must never relabel the first worker's plaintext with a new ID.
+        if (requestId != null) {
+            if (incomingId != requestId) {
+                ScreenDecryptStore.save(Intent()
+                    .putExtra(ScreenDecryptActivity.EXTRA_REQUEST_ID, incomingId)
+                    .putExtra(ScreenDecryptActivity.EXTRA_OK, false)
+                    .putExtra(ScreenDecryptActivity.EXTRA_MESSAGE, "上一张截图仍在处理中，请稍后重试"))
+            }
+            return START_NOT_STICKY
+        }
+        requestId = incomingId
+        if (!ScreenDecryptStore.isActive(requestId)) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
         val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, ActivityResultMissing) ?: ActivityResultMissing
         val data = intent?.projectionData()
         if (resultCode == ActivityResultMissing || data == null) {
@@ -128,6 +146,7 @@ class ScreenDecryptService : Service() {
 
     private fun startCapture(resultCode: Int, data: Intent) {
         if (completed) return
+        if (!ScreenDecryptStore.isActive(requestId)) { stopSelf(); return }
         try {
             val manager = getSystemService(MediaProjectionManager::class.java)
                 ?: throw IllegalStateException("系统不支持屏幕截图解密")
@@ -172,7 +191,12 @@ class ScreenDecryptService : Service() {
         }
         scope.launch {
             try {
-                val result = withContext(Dispatchers.Default) { decryptScreenshot(bitmap) }
+                val result = withContext(Dispatchers.Default) {
+                    try {
+                        check(ScreenDecryptStore.beginProcessing(requestId)) { "截图请求已取消或已过期" }
+                        decryptScreenshot(bitmap)
+                    } finally { bitmap.recycle() }
+                }
                 finishSuccess(result)
             } catch (e: Exception) {
                 finishFailure("解图失败：${e.userMessage()}")
@@ -189,7 +213,7 @@ class ScreenDecryptService : Service() {
                     ScreenDecryptResult.Text(result.payload.text())
                 } else {
                     val decoded = BitmapUtils.decodeImageBytes(result.payload.data)
-                    val uri = ImageStore.saveDecryptedPng(this, decoded)
+                    val uri = try { ImageStore.saveDecryptedPng(this, decoded) } finally { decoded.recycle() }
                     ScreenDecryptResult.Image(uri)
                 }
             }
@@ -255,7 +279,7 @@ class ScreenDecryptService : Service() {
     }
 
     private fun finishSuccess(result: ScreenDecryptResult) {
-        val intent = Intent(ScreenDecryptActivity.ACTION_RESULT).setPackage(packageName)
+        val intent = Intent()
             .putExtra(ScreenDecryptActivity.EXTRA_OK, true)
         when (result) {
             is ScreenDecryptResult.Text -> {
@@ -275,15 +299,15 @@ class ScreenDecryptService : Service() {
     private fun finishFailure(message: String) {
         if (!completed) completed = true
         cleanupCapture(stopProjection = true)
-        publishResult(Intent(ScreenDecryptActivity.ACTION_RESULT).setPackage(packageName)
+        publishResult(Intent()
             .putExtra(ScreenDecryptActivity.EXTRA_OK, false)
             .putExtra(ScreenDecryptActivity.EXTRA_MESSAGE, message))
         stopSelf()
     }
 
     private fun publishResult(intent: Intent) {
-        ScreenDecryptStore.save(this, intent)
-        sendBroadcast(intent)
+        intent.putExtra(ScreenDecryptActivity.EXTRA_REQUEST_ID, requestId)
+        ScreenDecryptStore.save(intent)
     }
 
     private fun cleanupCapture(stopProjection: Boolean) {

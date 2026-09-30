@@ -16,6 +16,11 @@ dependencies {
     testImplementation(kotlin("test"))
 }
 
+// Exercise the same bounded-heap conditions that previously let a tiny forged header OOM.
+tasks.test {
+    maxHeapSize = "256m"
+}
+
 // The repo-level canonical vectors are the single source of truth shared with :app. Putting
 // the directory on the test classpath lets VectorContractTest read /vectors.txt as a resource.
 sourceSets {

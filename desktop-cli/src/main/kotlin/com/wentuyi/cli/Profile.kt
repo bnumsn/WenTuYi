@@ -3,10 +3,8 @@ package com.wentuyi.cli
 import com.wentuyi.protocol.DoubleRatchet
 import com.wentuyi.protocol.Encoding
 import com.wentuyi.protocol.KeyExchange
-import com.wentuyi.protocol.RatchetStateCodec
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.attribute.PosixFilePermission
 
 /**
  * On-disk state for the desktop: one identity plus a set of peers, each with its own
@@ -25,6 +23,7 @@ import java.nio.file.attribute.PosixFilePermission
  *   identity            WTYB1 backup — this IS the private key
  *   passphrase          optional shared key for the legacy path
  *   peers/<name>.pub    peer's X25519 public key, base64url
+ *   peers/<name>.auth   versioned verification bound to both identities
  *   peers/<name>.ratchet   serialized ratchet session, if one has been opened
  * ```
  * There is no Keystore equivalent here, so these are plaintext secrets on disk; the file
@@ -55,50 +54,60 @@ class Profile(val home: Path) {
     private val passphraseFile: Path get() = home.resolve("passphrase")
     private val peersDir: Path get() = home.resolve("peers")
 
+    /** Hold across every read, crypto operation, and durable write in a command. */
+    fun <T> transaction(block: () -> T): T = SecretFiles.withLock(home.resolve(".lock"), block)
+
     // ─── Identity ─────────────────────────────────────────────────────────────
 
-    fun hasIdentity(): Boolean = Files.exists(identityFile)
+    fun hasIdentity(): Boolean = transaction { Files.exists(identityFile) }
 
-    fun loadIdentity(): KeyExchange.Identity {
+    fun loadIdentity(): KeyExchange.Identity = transaction {
         if (!hasIdentity()) {
             throw IllegalStateException("no identity in $home — run: desktop-cli init")
         }
-        return KeyExchange.decodeBackup(Files.readString(identityFile).trim())
+        KeyExchange.decodeBackup(Files.readString(identityFile).trim())
     }
 
     /** Creates the profile identity. Refuses to overwrite: that would orphan every peer. */
-    fun createIdentity(): KeyExchange.Identity {
+    fun createIdentity(): KeyExchange.Identity = transaction {
         check(!hasIdentity()) { "identity already exists in $home (delete it by hand to start over)" }
         val identity = KeyExchange.generateIdentity()
-        writeSecret(identityFile, KeyExchange.encodeBackup(identity))
-        return identity
+        clearAllPeerState()
+        SecretFiles.write(identityFile, KeyExchange.encodeBackup(identity))
+        identity
     }
 
-    fun importIdentity(backup: String): KeyExchange.Identity {
+    fun importIdentity(backup: String): KeyExchange.Identity = transaction {
         val identity = KeyExchange.decodeBackup(backup.trim())
-        writeSecret(identityFile, KeyExchange.encodeBackup(identity))
-        return identity
+        val previousPublicKey = runCatching { loadIdentity().publicKey }.getOrNull()
+        val unchanged = previousPublicKey?.contentEquals(identity.publicKey) == true
+        // Delete before replacing the identity. Interruption may lose a session, but can
+        // never leave an old session usable under the new identity.
+        if (!unchanged) clearAllPeerState()
+        SecretFiles.write(identityFile, KeyExchange.encodeBackup(identity))
+        identity
     }
 
     // ─── Shared passphrase (legacy path) ──────────────────────────────────────
 
-    fun passphrase(): String? =
+    fun passphrase(): String? = transaction {
         System.getenv("WENTUYI_PASSPHRASE")?.takeIf { it.isNotEmpty() }
             ?: if (Files.exists(passphraseFile)) {
                 Files.readString(passphraseFile).trim().takeIf { it.isNotEmpty() }
             } else null
+    }
 
-    fun setPassphrase(value: String) {
+    fun setPassphrase(value: String) = transaction {
         require(value.isNotBlank()) { "passphrase is blank" }
-        writeSecret(passphraseFile, value)
+        SecretFiles.write(passphraseFile, value)
     }
 
     // ─── Peers ────────────────────────────────────────────────────────────────
 
-    fun peerNames(): List<String> {
-        if (!Files.isDirectory(peersDir)) return emptyList()
+    fun peerNames(): List<String> = transaction {
+        if (!Files.isDirectory(peersDir)) return@transaction emptyList()
         Files.list(peersDir).use { stream ->
-            return stream.map { it.fileName.toString() }
+            stream.map { it.fileName.toString() }
                 .filter { it.endsWith(".pub") }
                 .map { it.removeSuffix(".pub") }
                 .sorted()
@@ -106,7 +115,7 @@ class Profile(val home: Path) {
         }
     }
 
-    fun addPeer(name: String, publicKey: ByteArray) {
+    fun addPeer(name: String, publicKey: ByteArray) = transaction {
         requireName(name)
         require(publicKey.size == 32) { "peer public key must be 32 bytes" }
         // Probe the key through a throwaway ECDH so a low-order / unusable key is refused
@@ -120,18 +129,62 @@ class Profile(val home: Path) {
         } finally {
             com.wentuyi.protocol.CryptoUtils.wipe(probe.privateKey)
         }
-        writeSecret(peersDir.resolve("$name.pub"), Encoding.b64Url(publicKey))
+        val file = peersDir.resolve("$name.pub")
+        val unchanged = Files.exists(file) && peerPublicKey(name).contentEquals(publicKey)
+        if (!unchanged) {
+            clearVerification(name)
+            clearRatchet(name)
+        }
+        SecretFiles.write(file, Encoding.b64Url(publicKey))
     }
 
-    fun peerPublicKey(name: String): ByteArray {
+    fun peerPublicKey(name: String): ByteArray = transaction {
         val file = peersDir.resolve("${requireName(name)}.pub")
         if (!Files.exists(file)) throw IllegalArgumentException("unknown peer: $name")
-        return Encoding.b64UrlDecode(Files.readString(file).trim())
+        Encoding.b64UrlDecode(Files.readString(file).trim())
     }
 
-    fun removePeer(name: String) {
-        Files.deleteIfExists(peersDir.resolve("${requireName(name)}.pub"))
-        Files.deleteIfExists(ratchetFile(name))
+    fun removePeer(name: String) = transaction {
+        clearVerification(name)
+        clearRatchet(name)
+        SecretFiles.delete(peersDir.resolve("${requireName(name)}.pub"))
+    }
+
+    // Verification never carries over from legacy short codes or a changed identity.
+    private fun authFile(name: String): Path = peersDir.resolve("${requireName(name)}.auth")
+
+    private fun authenticationRecord(name: String): String =
+        "WTYA${KeyExchange.AUTH_VERSION}\n${Encoding.b64Url(loadIdentity().publicKey)}\n" +
+            Encoding.b64Url(peerPublicKey(name))
+
+    fun isPeerVerified(name: String): Boolean = transaction {
+        val file = authFile(name)
+        Files.exists(file) && runCatching {
+            Files.readString(file) == authenticationRecord(name)
+        }.getOrDefault(false)
+    }
+
+    fun requirePeerVerified(name: String) {
+        check(isPeerVerified(name)) {
+            "peer '$name' is unverified; compare the complete 256-bit code over a trusted " +
+                "channel, then run: desktop-cli peer-verify --peer $name --code FULLCODE"
+        }
+    }
+
+    fun verifyPeer(name: String, code: String) = transaction {
+        val normalized = code.filterNot(Char::isWhitespace).uppercase(java.util.Locale.ROOT)
+        val expected = KeyExchange.shortAuthString(loadIdentity(), peerPublicKey(name))
+            .filterNot(Char::isWhitespace)
+        require(normalized.length == 64 && normalized == expected) {
+            "authentication code does not match; compare all 64 hexadecimal characters"
+        }
+        SecretFiles.write(authFile(name), authenticationRecord(name))
+    }
+
+    private fun clearVerification(name: String) = SecretFiles.delete(authFile(name))
+
+    fun epochForReset(name: String): Long = transaction {
+        StoredRatchet.epochForReset(ratchetFile(name))
     }
 
     // ─── Ratchet sessions ─────────────────────────────────────────────────────
@@ -139,29 +192,30 @@ class Profile(val home: Path) {
     private fun ratchetFile(name: String): Path =
         peersDir.resolve("${requireName(name)}.ratchet")
 
-    fun loadRatchet(name: String): DoubleRatchet.State? {
+    fun loadRatchet(name: String): DoubleRatchet.State? = transaction {
         val file = ratchetFile(name)
-        if (!Files.exists(file)) return null
-        return runCatching { RatchetStateCodec.decodeText(Files.readString(file)) }.getOrNull()
+        if (!Files.exists(file)) return@transaction null
+        val stored = StoredRatchet.read(file)
+        stored.requireIdentities(loadIdentity().publicKey, peerPublicKey(name))
+        stored.state
     }
 
-    fun saveRatchet(name: String, state: DoubleRatchet.State) {
-        writeSecret(ratchetFile(name), RatchetStateCodec.encodeText(state))
+    fun saveRatchet(name: String, state: DoubleRatchet.State) = transaction {
+        StoredRatchet(loadIdentity().publicKey, peerPublicKey(name), state).write(ratchetFile(name))
     }
 
-    fun clearRatchet(name: String) {
-        Files.deleteIfExists(ratchetFile(name))
+    fun clearRatchet(name: String) = transaction {
+        SecretFiles.delete(ratchetFile(name))
     }
 
     // ─── Internals ────────────────────────────────────────────────────────────
 
-    /** Writes 0600 where the filesystem has POSIX permissions (no-op on Windows). */
-    private fun writeSecret(path: Path, content: String) {
-        path.parent?.let { Files.createDirectories(it) }
-        Files.write(path, content.toByteArray(Charsets.UTF_8))
-        runCatching {
-            Files.setPosixFilePermissions(
-                path, setOf(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE))
+    private fun clearAllPeerState() {
+        if (!Files.isDirectory(peersDir)) return
+        Files.list(peersDir).use { files ->
+            files.filter { it.fileName.toString().endsWith(".ratchet") ||
+                it.fileName.toString().endsWith(".auth") }
+                .forEach(SecretFiles::delete)
         }
     }
 }

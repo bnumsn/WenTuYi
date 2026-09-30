@@ -1,6 +1,5 @@
 package com.wentuyi.app
 
-import com.wentuyi.protocol.CryptoUtils
 
 import com.wentuyi.protocol.SecurePayloadCodec
 
@@ -86,7 +85,9 @@ class SendController(
                     if (antiOcr) TextImageCodec.renderAntiOcrTextImage(text)
                     else TextImageCodec.renderPlainTextImage(text)
                 }
-                val uri = withContext(Dispatchers.IO) { ImageStore.savePng(service, bitmap) }
+                val uri = withContext(Dispatchers.IO) {
+                    try { ImageStore.savePng(service, bitmap) } finally { bitmap.recycle() }
+                }
                 deliverImages(
                     listOf(uri), anchor,
                     if (antiOcr) "已插入防 OCR 图片" else "已插入文字图片",
@@ -123,9 +124,13 @@ class SendController(
         onStatus(progressLabel("正在生成加密二维码...", target))
         scope.launch {
             try {
-                val qr = withContext(Dispatchers.Default) { encryptToQrBitmaps(text, target) }
-                val uris = withContext(Dispatchers.IO) { qr.bitmaps.map { ImageStore.savePng(service, it) } }
-                val pfsNote = if (qr.noForwardSecrecy) "（暂无前向保密）" else ""
+                val encrypted = withContext(Dispatchers.Default) {
+                    MessageEncryptor.encryptText(service, target, text)
+                }
+                val uris = withContext(Dispatchers.IO) {
+                    ImageStore.saveEncryptedPayloadQr(service, encrypted.payload)
+                }
+                val pfsNote = if (encrypted.noForwardSecrecy) "（暂无前向保密）" else ""
                 val suffix = " (${targetLabel(target)})$pfsNote"
                 deliverImages(
                     uris,
@@ -138,36 +143,6 @@ class SendController(
                 onStatus("加密失败：${e.userMessage()}")
             }
         }
-    }
-
-    // ─── Crypto routing ──────────────────────────────────────────────────────
-
-    /** QR bitmaps + whether it fell back off the forward-secret ratchet path. */
-    private class EncryptedQr(val bitmaps: List<android.graphics.Bitmap>, val noForwardSecrecy: Boolean)
-
-    private fun encryptToQrBitmaps(text: String, target: SendTarget): EncryptedQr = when (target) {
-        is SendTarget.SharedPassphrase ->
-            EncryptedQr(
-                TextImageCodec.renderEncryptedTextAsQr(text, WentuyiSettings.getPassphrase(service)),
-                noForwardSecrecy = false,
-            )
-        is SendTarget.Contact -> {
-            // Same ratchet-first / WTY4-fallback rule as the text path. The ratchet message
-            // key is consumed + persisted here; a never-scanned QR just becomes a skipped
-            // message on the receiver, which the ratchet tolerates.
-            val ratchet = RatchetSession.encryptText(service, target.identity, target.contact, text)
-            if (ratchet != null) {
-                EncryptedQr(TextImageCodec.renderEncryptedPayloadAsQr(ratchet), noForwardSecrecy = false)
-            } else {
-                val secret = KeyExchange.deriveSharedSecret(target.identity, target.contact.publicKey)
-                try {
-                    EncryptedQr(TextImageCodec.renderEncryptedTextAsQr(text, secret), noForwardSecrecy = true)
-                } finally {
-                    CryptoUtils.wipe(secret)
-                }
-            }
-        }
-        is SendTarget.Unavailable -> throw IllegalStateException(target.reason)
     }
 
     // ─── Delivery primitives ─────────────────────────────────────────────────
@@ -250,18 +225,19 @@ class SendController(
 
         if (anchorStillCurrent(anchor) && canCommitImageToTarget()) {
             val connection = service.currentInputConnection
-            val clearedSource = connection != null &&
-                sourceText != null &&
-                clearVisibleTextIfMatches(connection, sourceText)
+            val clearedSource = if (connection != null && sourceText != null)
+                clearVisibleTextIfMatches(connection, sourceText) else null
             val (committedAll, committedCount) = tryCommitImages(uris)
             if (committedAll) { onStatus(commitOk); return }
-            if (clearedSource && committedCount == 0 && sourceText != null) {
-                restoreVisibleText(connection, sourceText)
-            }
             val remaining = if (committedCount > 0) uris.drop(committedCount) else uris
             val shared = shareImages(remaining, anchor.packageName)
             if (shared) {
                 onStatus(if (committedCount > 0) "$commitOk（$committedCount 张已插入，其余转分享）" else sharedOk)
+            } else if (clearedSource != null && committedCount == 0 && sourceText != null &&
+                anchorStillCurrent(anchor)) {
+                // Restore only after every delivery path has failed. Restoring before
+                // sharing left a successfully shared QR alongside sendable plaintext.
+                restoreVisibleTextIfUnchanged(connection, sourceText, clearedSource)
             }
             return
         }
@@ -271,38 +247,55 @@ class SendController(
         // user sending the cleartext by accident — then share. Restore it if the share
         // never launches. Only touch the field if the anchor is still the live target.
         val connection = service.currentInputConnection
-        val clearedSource = connection != null && sourceText != null &&
-            anchorStillCurrent(anchor) && clearVisibleTextIfMatches(connection, sourceText)
+        val clearedSource = if (connection != null && sourceText != null && anchorStillCurrent(anchor))
+            clearVisibleTextIfMatches(connection, sourceText) else null
         val preferred = anchor.packageName.takeIf { anchorStillCurrent(anchor) }
         val shared = shareImages(uris, preferred)
         if (shared) {
             onStatus(sharedOk)
-        } else if (clearedSource && sourceText != null) {
-            restoreVisibleText(connection, sourceText)
+        } else if (clearedSource != null && sourceText != null && anchorStillCurrent(anchor)) {
+            restoreVisibleTextIfUnchanged(connection, sourceText, clearedSource)
         }
         // else: startChooser already set "没有可用的分享应用".
     }
 
-    private fun clearVisibleTextIfMatches(connection: InputConnection, sourceText: String): Boolean =
+    private data class ClearedSource(val before: String, val after: String)
+
+    private fun clearVisibleTextIfMatches(connection: InputConnection, sourceText: String): ClearedSource? =
         runCatching {
             connection.beginBatchEdit()
             try {
                 val selected = connection.getSelectedText(0)
-                if (!selected.isNullOrEmpty()) {
-                    return@runCatching selected.toString() == sourceText && connection.commitText("", 1)
+                val cleared = if (!selected.isNullOrEmpty()) {
+                    selected.toString() == sourceText && connection.commitText("", 1)
+                } else {
+                    val before = connection.getTextBeforeCursor(MAX_FIELD_CHARS, 0)?.toString().orEmpty()
+                    val after = connection.getTextAfterCursor(MAX_FIELD_CHARS, 0)?.toString().orEmpty()
+                    before + after == sourceText &&
+                        ((before.isEmpty() && after.isEmpty()) || connection.deleteSurroundingText(before.length, after.length))
                 }
-                val before = connection.getTextBeforeCursor(MAX_FIELD_CHARS, 0)?.toString().orEmpty()
-                val after = connection.getTextAfterCursor(MAX_FIELD_CHARS, 0)?.toString().orEmpty()
-                if (before + after != sourceText) return@runCatching false
-                if (before.isEmpty() && after.isEmpty()) return@runCatching true
-                connection.deleteSurroundingText(before.length, after.length)
+                if (!cleared) return@runCatching null
+                // Preserve surrounding text when the encrypted source was a selection.
+                // If the host can't provide a restoration point, don't guess later.
+                val before = connection.getTextBeforeCursor(MAX_FIELD_CHARS, 0)?.toString() ?: return@runCatching null
+                val after = connection.getTextAfterCursor(MAX_FIELD_CHARS, 0)?.toString() ?: return@runCatching null
+                ClearedSource(before, after)
             } finally {
                 connection.endBatchEdit()
             }
-        }.getOrDefault(false)
+        }.getOrNull()
 
-    private fun restoreVisibleText(connection: InputConnection?, sourceText: String) {
-        runCatching { connection?.commitText(sourceText, 1) }
+    private fun restoreVisibleTextIfUnchanged(connection: InputConnection?, sourceText: String, cleared: ClearedSource) {
+        if (connection == null) return
+        runCatching {
+            connection.beginBatchEdit()
+            try {
+                if (!connection.getSelectedText(0).isNullOrEmpty()) return@runCatching
+                val before = connection.getTextBeforeCursor(MAX_FIELD_CHARS, 0)?.toString()
+                val after = connection.getTextAfterCursor(MAX_FIELD_CHARS, 0)?.toString()
+                if (before == cleared.before && after == cleared.after) connection.commitText(sourceText, 1)
+            } finally { connection.endBatchEdit() }
+        }
     }
 
     private fun tryCommitImages(uris: List<Uri>): Pair<Boolean, Int> {

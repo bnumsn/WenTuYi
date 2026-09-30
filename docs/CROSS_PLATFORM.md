@@ -2,14 +2,16 @@
 
 目标不是让所有系统拥有完全相同的输入法能力，而是让所有平台互通同一种文图易协议：当前默认 `WTY4:` 文本、已验证联系人 `WTY5:` 棘轮消息、身份码、联系人 SAS、QR 分片和解密结果一致；`WTY1`-`WTY3` 仅作为兼容解密保留。系统输入法外壳按平台单独实现。
 
+本文对应 v0.7.4（Android 版本码 15）。正常线上格式不变，桌面旧会话文件需要重置，Android 旧明文联系人及旧 8 位验证迁移后需要重新核对全部 16 组安全码；桌面须先 `peer-verify` 再重置会话；详见 [README 升级说明](../README.md#v074-安全修复与升级说明)。
+
 ## 平台矩阵
 
 | 平台 | 可行性 | 输入法形态 | 仓库当前状态 |
 |---|---:|---|---|
-| Android | 高 | `InputMethodService` | 完整 IME，仍是功能基准 |
+| Android | 高 | `InputMethodService` + App 内独立输入 | 功能闭环较完整，仍是功能基准；需真机验证，独立输入用于在交给聊天应用前加密 |
 | iOS / iPadOS | 中低 | Keyboard Extension + 主 App + Share Extension | **仅 UI 外壳，无密码学实现**（`WentuyiCryptoBackend` 是空 protocol，调用返回 `cryptoBackendMissing`）。不可用于真实通信 |
 | macOS | 中高 | `InputMethodKit` | **仅 UI 外壳，无密码学实现**，同上。需 macOS/Xcode 打包和系统输入法注册测试 |
-| Windows | 中高 | 全局热键输入桥 / 后续 TSF IME | PowerShell hotkey bridge + 便携 JRE + JVM CLI 包；桥接已接到 `send`/`receive`，**支持联系人与 WTY5 前向保密**（`-Peer NAME`）；Windows 测试机已通过 package smoke 和 RDP 交互 UI smoke |
+| Windows | 中高 | 全局热键输入桥 / 后续 TSF IME | PowerShell hotkey bridge + 便携 JRE + JVM CLI 包；桥接已接到 `send`/`receive`，**支持联系人与 WTY5 前向保密**（`-Peer NAME`）；已有版本通过 package smoke 和 RDP 交互 UI smoke，本轮未重新在真实 Windows 实测 |
 | Linux / BSD | 中 | IBus engine / direct insert helper / Fcitx5 后续可选 | IBus engine + wrapper + direct insert helper + 远程 smoke；桥接已接到 `send`/`receive`，**支持联系人与 WTY5**（`--peer NAME` 或 `WENTUYI_PEER`）；Linux 测试机已通过 CLI、IBus self-test、Xvfb/GTK Entry UI smoke 和富文本 direct insert smoke |
 | Web | 低 | Web 工具或浏览器扩展 | 尚未实现；只承诺后续协议工具，不承诺系统级输入法 |
 
@@ -18,13 +20,16 @@
 所有平台必须共享以下行为，避免 Android 以外平台产生不兼容密文：
 
 1. `WTY4` envelope：AES-256-GCM、37 字节 header、AAD 绑定 version/type/key-mode/Argon 参数/salt/IV。
-2. `WTY5` envelope：已验证联系人消息优先使用 Double Ratchet；拿到发送链前可回退 WTY4 session-key 路径并必须对用户可见。header 48 字节，前 8 字节为会话 epoch：收到更新的 epoch 必须重新自举（对端重置），收到已退休的 epoch 必须拒绝（防重放），并必须提供"重置加密会话"入口。**任何实现 WTY5 加密的平台都必须同时实现解密**，否则会出现"对方验证了你、于是你再也收不到 TA 的消息"。
+2. `WTY5` envelope：已验证联系人消息优先使用 Double Ratchet；拿到发送链前可回退 WTY4 session-key 路径并必须对用户可见。header 48 字节，前 8 字节为会话 epoch：收到更新的 epoch 可按其重新自举试解，只有认证成功后才保存；收到已退休的 epoch 必须拒绝（防重放），并必须提供"重置加密会话"入口。任何实现 WTY5 加密的平台都必须同时实现解密。
 3. 旧格式解密：继续兼容 `WTY1:` / `WTY2:` / `WTY3:` 文本载荷。
 4. 密钥路径：共享密钥模式使用 Argon2id；联系人 fallback 使用 X25519 + HKDF-SHA256。
 5. 身份码：`WTYID1|<name>|<base64-public-key>`。
 6. 备份码：`WTYB1-...`，保留 CRC32 校验和 v0.4 兼容读取。
 7. QR 传输：单 QR 直接承载 payload；多 QR 使用 `WTYP1|id|N|T|chunk`，id 由 payload hash 派生。
 8. 错误语义：区分格式错误、共享密钥不匹配、缺身份、缺联系人、找不到联系人。
+9. 收发大小：WTY1–5 密文最多 524288 字符（含前缀/Base64）；WTY4 明文最多 393157 字节，WTY5 最多 393146 字节，图像页/分块另扣元数据。文本先检查 UTF-8 字节数，接收先检查密文长度，超长发送不得推进会话。QR 传输另限 32 张 × 800 字符正文。
+10. KDF 预算：WTY4 的 `memKB ∈ [8192,65536]`、`iter ∈ [1,10]`、`par ∈ [1,4]`，且 `memKB × iter ≤ 262144`。串行化派生并预留实现开销和可用内存，不应仅捕获 OOM 或相信未认证 header；JVM 预算细节见 [协议规范](PROTOCOL.md#2-wty4-envelope当前默认)。
+11. 会话持久化：锁覆盖读取、加解密、同步保存全过程；桌面需要跨进程锁与原子替换。密文只能在状态保存成功后输出。会话绑定双方身份，更换身份/联系人公钥不能沿用旧状态；联系人选择不能依赖列表下标。
 
 ## 当前工程结构
 
@@ -57,7 +62,8 @@ Android 与 `shared-protocol` 已共享测试向量；后续平台必须以 shar
 
 ### P2: 桌面文本优先
 
-- Windows/Linux CLI 已支持完整 WTY1–5。桌面 profile（`init` / `peer-add` / `send --peer` / `receive`，状态在 `WENTUYI_HOME`）由 CLI 自行选协议，输入桥只透传文本——协议路由不应该写在 shell/PowerShell/Python 里三份。macOS 仍待 crypto backend 接入。
+- Windows/Linux CLI 已支持 WTY4/WTY5 发送与 WTY1–5 兼容解密。桌面 profile（`init` / `peer-add` / `peer-verify` / `send --peer` / `receive`，状态在 `WENTUYI_HOME`）由 CLI 自行选协议，输入桥只透传文本——协议路由不应该写在 shell/PowerShell/Python 里三份。macOS 仍待 crypto backend 接入。
+- profile 与原始 `--state` 命令已共用锁和原子持久化规则。旧会话文件没有双方公钥绑定，升级时必须执行 `peer-reset --peer NAME` 或用原身份/对方公钥重新 `ratchet-init`；状态重置后通过一条新消息恢复，旧会话未接收消息可能失效。
 - 桌面端不能把复制/粘贴作为富文本主链路；Windows 需要 TSF 或不抢焦点的直接插入 helper，Linux 需要 IBus/Fcitx `commit_text`，macOS 需要 InputMethodKit `insertText`。
 - QR 图片生成、解密、身份管理放在伴随设置 App；如果平台支持内容插入则直接插入当前位置，否则走系统分享/拖放，不把剪贴板作为默认动作。
 - 平台输入法只调用共享协议层，不单独实现密码学。
@@ -77,6 +83,7 @@ Android 与 `shared-protocol` 已共享测试向量；后续平台必须以 shar
 
 ## 不做的承诺
 
+- 聊天框内转换不会阻止宿主在加密前读取原文。若需把明文留在文图易侧，必须使用独立输入页或对应平台的独立编辑区，之后仅传送密文；输入法和来源应用的可见范围仍需明确告知。
 - 不承诺所有平台都能像 Android 一样直接向宿主 App 插入图片。
 - 不承诺 iOS 在 secure text field 或禁用第三方键盘的 App 内可用。
 - 不把 Web 版本包装成系统输入法。
@@ -90,8 +97,11 @@ Android 与 `shared-protocol` 已共享测试向量；后续平台必须以 shar
 
 ## 当前落地状态
 
-- `shared-protocol`：已新增纯 JVM 协议核心，覆盖 `WTY4` 文本加密/解密、`WTY5` Double Ratchet、`WTY1`-`WTY3` 文本解密、X25519 身份、SAS、备份码、`WTYP1` 文本分片。
-- `desktop-cli`：已新增 Windows/Linux 可运行的桌面协议 CLI，用于先验证非 Android 平台的协议互通。
+v0.7.4 已在 API 34 模拟器通过 93 项自动化测试及 11 项 UI 验证；真实 Android 设备、真实摄像头和第三方聊天宿主仍待验收，发布以对应版本标签的 CI 门禁通过为准。以下 Windows/Linux 实机结果是已有版本的记录，不能视作 v0.7.4 已完成平台实测；Windows 桌面热键和真实窗口交互仍待验收。
+
+- `shared-protocol`：纯 JVM 协议核心覆盖 `WTY4` 文本加密/解密、`WTY5` Double Ratchet、`WTY1`-`WTY3` 文本解密、X25519 身份、完整安全码、备份码、`WTYP1` 文本分片；v0.7.4 统一收发大小预算、限制 Argon2 资源消耗，并保证已知会话重置 epoch 严格递增。
+- `desktop-cli`：Windows/Linux 协议 CLI；v0.7.4 增加跨进程状态事务、原子保存、双方身份绑定、完整安全码认证与换公钥后清除旧会话，并保留正文空白与换行。
+- Android：v0.7.4 将屏幕解密结果改为进程内按请求消费，扫描页旋转及键盘切换输入目标后保留当前结果，联系人选择绑定指纹，旧明文联系人及旧 8 位验证迁移后需重新核对完整安全码；密图分享成功不恢复原文，二维码逐页处理并增加密集二维码定位回退；独立输入页加密后仅在用户显式操作时复制或分享。
 - Linux：已新增 `platforms/linux/wentuyi-cli`、`platforms/linux/wentuyi-insert.sh`、`platforms/linux/ibus/wentuyi_ibus.py`、`platforms/linux/install-ibus.sh`、`platforms/linux/test-remote.sh`、`platforms/linux/ui-smoke.sh` 和 `platforms/linux/ui-rich-smoke.sh`；测试机已安装 Java 17，远程脚本通过共享密钥、X25519 session-key、IBus self-test、direct insert self-test 和 GTK 输入框普通文本 UI smoke。GTK `TextView` 富文本 direct insert smoke 已通过：`wentuyi-insert.sh` 可不使用剪贴板把 `WTY4:` 直接插入富文本光标位置，再直接解密回明文并保留前后格式。GTK `TextView` 对 synthetic key event 进入 IBus engine 的路径在 Xvfb 中不稳定，因此富文本默认走 direct insert helper。
 - Windows 测试机：SMB/SCM 可达；CLI zip、PowerShell 脚本和便携 JRE zip 已上传到 `C:\Temp\wentuyi`，package smoke 已通过。
 - Windows：已新增 `platforms/windows/wentuyi-cli.ps1`、`wentuyi-insert.ps1`、`wentuyi-hotkey.ps1`、`install-hotkey.ps1`、`test-local.ps1`、`test-package.ps1`、`ui-smoke.ps1`、`ui-rich-smoke.ps1` 和 `ui-direct-insert-smoke.ps1`；支持系统 Java 17+ 或同目录 `jre-windows.zip`，RDP 交互桌面普通文本 UI smoke 已验证 Notepad 选中文本加密/解密，包自检覆盖直接 Unicode 插入 helper。RichTextBox 直接插入 UI smoke 已通过：`wentuyi-insert.ps1 -TargetHwnd` 可把 `WTY4:` 直接插入目标富文本位置，再直接替换回明文并保留前后格式。RichTextBox hotkey/clipboard UI smoke 也已真实运行，结论是 PowerShell clipboard hotkey 只能保留为普通文本兼容桥，富文本目标必须转 TSF/目标 HWND 直插。

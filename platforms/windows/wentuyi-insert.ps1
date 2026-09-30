@@ -112,7 +112,7 @@ public static class WentuyiDirectInsertNative {
 function Get-WentuyiPassphrase([switch] $AllowMissing) {
     if ($env:WENTUYI_PASSPHRASE) { return $env:WENTUYI_PASSPHRASE }
     if (Test-Path $PassphraseFile) {
-        $value = (Get-Content -LiteralPath $PassphraseFile -Raw).Trim()
+        $value = (Get-Content -LiteralPath $PassphraseFile -Raw -Encoding UTF8).Trim()
         if ($value) { return $value }
     }
     if ($AllowMissing) { return $null }
@@ -131,7 +131,11 @@ function Invoke-WentuyiCli([string[]] $ArgsList, [string] $Passphrase = $null, [
             $output = & $CliScript @ArgsList
         }
         if ($LASTEXITCODE -ne 0) { throw "desktop-cli failed: $($output -join "`n")" }
-        return ($output -join "`n").Trim()
+        $result = $output -join "`n"
+        if ($ArgsList[0] -in @("receive", "decrypt-text", "session-decrypt", "ratchet-decrypt")) {
+            return $result
+        }
+        return $result.Trim()
     } finally {
         if ($null -eq $prev) { Remove-Item Env:\WENTUYI_PASSPHRASE -ErrorAction SilentlyContinue }
         else { $env:WENTUYI_PASSPHRASE = $prev }

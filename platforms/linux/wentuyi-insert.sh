@@ -52,7 +52,8 @@ done
 # A VALUE of "-" reads the text/payload from stdin, so sensitive content never appears in
 # this wrapper's own argv (/proc/<pid>/cmdline, ps). Recommended for encrypt/decrypt.
 if [ "$VALUE" = "-" ]; then
-    VALUE="$(cat)"
+    # read preserves trailing newlines, unlike command substitution.
+    IFS= read -r -d '' VALUE || [ "$?" -eq 1 ]
 fi
 
 if [ "$MODE" = "self-test" ]; then
@@ -82,12 +83,13 @@ cli_env() {
 }
 
 type_direct() {
-    xdotool type --delay "$TYPE_DELAY" --clearmodifiers "$1"
+    # stdin keeps decrypted/plain text out of /proc/<pid>/cmdline and preserves whitespace.
+    xdotool type --delay "$TYPE_DELAY" --clearmodifiers --file -
 }
 
 case "$MODE" in
     text)
-        type_direct "$VALUE"
+        printf '%s' "$VALUE" | type_direct
         ;;
     encrypt-text)
         # Secret via env, text via stdin → neither appears in argv (/proc/<pid>/cmdline, ps).
@@ -95,11 +97,10 @@ case "$MODE" in
         # exists, else the WTY4 session key, else the shared passphrase. Doing that choice
         # here in shell is what kept this bridge stuck on shared-key-only.
         payload=$(printf '%s' "$VALUE" | cli_env "$CLI" send ${PEER:+--peer "$PEER"} --stdin)
-        type_direct "$payload"
+        printf '%s' "$payload" | type_direct
         ;;
     decrypt-text)
         # `receive` auto-detects WTY5 / WTY4-session / WTY4-passphrase and the sender.
-        plain=$(printf '%s' "$VALUE" | cli_env "$CLI" receive --stdin 2>/dev/null)
-        type_direct "$plain"
+        printf '%s' "$VALUE" | cli_env "$CLI" receive --stdin | type_direct
         ;;
 esac

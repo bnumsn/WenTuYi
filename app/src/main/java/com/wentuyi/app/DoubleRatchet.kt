@@ -24,7 +24,7 @@ object DoubleRatchet {
     fun isInitiator(selfIdentityPub: ByteArray, peerIdentityPub: ByteArray): Boolean =
         ProtoDR.isInitiator(selfIdentityPub, peerIdentityPub)
 
-    fun newEpoch(): Long = ProtoDR.newEpoch()
+    fun newEpoch(afterEpoch: Long = 0L): Long = ProtoDR.newEpoch(afterEpoch)
 
     fun peekEpoch(payload: String?): Long? = ProtoDR.peekEpoch(payload)
 

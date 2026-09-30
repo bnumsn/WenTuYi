@@ -1,0 +1,56 @@
+name: Android device tests
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Commit or tag to test (release gates must test the release ref)
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  instrumentation:
+    name: Android API ${{ matrix.api-level }} instrumentation
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        # API29 exercises pre-Android-13 receiver rules; API34 covers modern lifecycle/API behavior.
+        api-level: [29, 34]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Enable KVM for the runner user
+        run: |
+          test -c /dev/kvm
+          sudo chown "$(id -u):$(id -g)" /dev/kvm
+          sudo chmod 660 /dev/kvm
+      - name: Build application and instrumentation APKs
+        run: ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest
+      - name: Run instrumentation on a clean emulator
+        env:
+          WENTUYI_ANDROID_API: ${{ matrix.api-level }}
+        run: ./scripts/android-device-tests.sh "$WENTUYI_ANDROID_API"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-device-api-${{ matrix.api-level }}
+          path: |
+            app/build/reports/androidTests/connected
+            app/build/outputs/androidTest-results/connected
+            build/device-test-logs
+          if-no-files-found: ignore

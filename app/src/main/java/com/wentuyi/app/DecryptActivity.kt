@@ -1,14 +1,11 @@
 package com.wentuyi.app
 
-import com.wentuyi.protocol.SecurePayloadCodec
-
 import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
-import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
 import android.util.TypedValue
@@ -20,13 +17,6 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.MainScope
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import java.security.GeneralSecurityException
 
 /**
  * Decrypts incoming WTY4 / WTY5 / legacy payloads received via:
@@ -42,7 +32,7 @@ class DecryptActivity : Activity() {
         private const val REQ_PICK_IMAGES = 201
     }
 
-    private val scope: CoroutineScope = MainScope()
+    private lateinit var operation: DecryptOperation
     private lateinit var statusView: TextView
     private lateinit var resultView: TextView
     private lateinit var imagesLayout: LinearLayout
@@ -55,8 +45,15 @@ class DecryptActivity : Activity() {
         Palette.refresh(this)
         // Sweep any decrypted-plaintext PNG whose short TTL has expired.
         ImageStore.pruneNow(this)
+        val retained = lastNonConfigurationInstance as? DecryptOperation
+        operation = retained ?: DecryptOperation(applicationContext)
         buildUi()
-        handleIncomingIntent(intent)
+        operation.attach(::renderState)
+        when {
+            retained != null -> Unit // Reattach to the original work/result; never consume again.
+            savedInstanceState != null -> operation.restoredAfterProcessDeath()
+            else -> handleIncomingIntent(intent)
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -65,7 +62,13 @@ class DecryptActivity : Activity() {
         handleIncomingIntent(intent)
     }
 
-    override fun onDestroy() { scope.cancel(); super.onDestroy() }
+    override fun onRetainNonConfigurationInstance(): Any = operation
+
+    override fun onDestroy() {
+        operation.detach()
+        if (!isChangingConfigurations) operation.close()
+        super.onDestroy()
+    }
 
     @Suppress("DEPRECATION")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
@@ -149,62 +152,7 @@ class DecryptActivity : Activity() {
 
     // ─── Decryption flows ───────────────────────────────────────────────────
 
-    private fun decryptFromUris(uris: List<Uri>) {
-        setBusy("正在识别二维码…")
-        scope.launch {
-            try {
-                val result = withContext(Dispatchers.Default) { decryptUrisBlocking(uris) }
-                showResult(result)
-            } catch (e: Exception) {
-                showFailure("解密失败", e.userMessage())
-            }
-        }
-    }
-
-    private suspend fun decryptUrisBlocking(uris: List<Uri>): DecryptionResult {
-        val bitmaps = withContext(Dispatchers.IO) {
-            uris.map { BitmapUtils.decodeImportImage(contentResolver, it) }
-        }
-        val qrTexts = bitmaps.map { TextImageCodec.readQrText(it) }
-        if (qrTexts.size > 1) {
-            withContext(Dispatchers.Main) {
-                statusView.text = "已识别 ${qrTexts.size} 张二维码，正在重组…"
-            }
-        }
-        // Identity QR(s) take precedence — if the user picked an identity card, route to ScanActivity.
-        if (qrTexts.any { it.startsWith("${KeyExchange.QR_PREFIX}|") }) {
-            val identityText = qrTexts.first { it.startsWith("${KeyExchange.QR_PREFIX}|") }
-            val (name, publicKey) = KeyExchange.decodeIdentityFromQr(identityText)
-            val myIdentity = KeyExchange.getOrCreateIdentity(this)
-            // Derive SAS first — ecdh() rejects low-order pubkeys. Don't persist a
-            // contact whose math would never work.
-            val sas = KeyExchange.shortAuthString(myIdentity, publicKey)
-            KeyExchange.saveContact(this, KeyExchange.Contact(name, publicKey))
-            return DecryptionResult(
-                resultText = "已添加联系人：$name\n指纹：${
-                    KeyExchange.Contact(name, publicKey).fingerprint
-                }\n校验码 (请双方核对)：$sas",
-                statusText = "联系人已保存",
-                lastPlainText = null,
-                images = emptyList()
-            )
-        }
-
-        val payload = TextImageCodec.assemblePayloadFromTexts(qrTexts)
-        return resultFromMessageDecryptor(MessageDecryptor.decrypt(this, payload))
-    }
-
-    private fun resultFromMessageDecryptor(result: MessageDecryptor.Result): DecryptionResult {
-        return when (result) {
-            is MessageDecryptor.Result.Success -> {
-                val base = resultFromDecrypted(result.payload)
-                if (result.sender != null) {
-                    base.copy(statusText = "${base.statusText} · 来自 ${result.sender.name}")
-                } else base
-            }
-            is MessageDecryptor.Result.Failure -> throw java.security.GeneralSecurityException(result.message)
-        }
-    }
+    private fun decryptFromUris(uris: List<Uri>) = operation.decryptImages(uris)
 
     private fun decryptClipboardText() {
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
@@ -217,23 +165,18 @@ class DecryptActivity : Activity() {
         decryptTextPayload(text.toString().trim())
     }
 
-    private fun decryptTextPayload(payload: String) {
-        setBusy("正在解密文字…")
-        scope.launch {
-            try {
-                val result = withContext(Dispatchers.Default) {
-                    resultFromMessageDecryptor(MessageDecryptor.decrypt(this@DecryptActivity, payload))
-                }
-                showResult(result)
-            } catch (e: Exception) {
-                showFailure("解密失败", e.userMessage())
-                // Sharing plaintext here is an easy mistake — the share sheet lists both
-                // 文图易加密 and 文图易解密 side by side. Offer the other door instead of
-                // dead-ending on "不是文图易加密内容".
-                if (!SecurePayloadCodec.isPayload(payload) &&
-                    !payload.startsWith(DoubleRatchet.PREFIX_V5)) {
-                    offerEncryptInstead(payload)
-                }
+    private fun decryptTextPayload(payload: String) = operation.decryptText(payload)
+
+    private fun renderState(state: DecryptOperation.State) {
+        encryptInsteadButton?.let { encryptInsteadHost.removeView(it) }
+        encryptInsteadButton = null
+        when (state) {
+            DecryptOperation.State.Idle -> Unit
+            is DecryptOperation.State.Busy -> setBusy(state.message)
+            is DecryptOperation.State.Success -> showResult(state.result)
+            is DecryptOperation.State.Failure -> {
+                showFailure("解密失败", state.message)
+                state.encryptInstead?.let(::offerEncryptInstead)
             }
         }
     }
@@ -246,16 +189,6 @@ class DecryptActivity : Activity() {
         }
         encryptInsteadButton = button
         encryptInsteadHost.addView(button, matchWrapWithTop(12))
-    }
-
-    private fun resultFromDecrypted(decrypted: SecurePayloadCodec.DecryptedPayload): DecryptionResult {
-        return if (decrypted.isText()) {
-            val text = decrypted.text()
-            DecryptionResult(text, "文字解密完成", text, emptyList())
-        } else {
-            val bitmap = BitmapUtils.decodeImageBytes(decrypted.data)
-            DecryptionResult("已解密一张图片", "图片解密完成", null, listOf(bitmap))
-        }
     }
 
     // ─── UI updates ─────────────────────────────────────────────────────────
@@ -311,13 +244,6 @@ class DecryptActivity : Activity() {
 
     // ─── Local types + helpers ──────────────────────────────────────────────
 
-    private data class DecryptionResult(
-        val resultText: String,
-        val statusText: String,
-        val lastPlainText: String?,
-        val images: List<Bitmap>,
-    )
-
     private fun subtle(text: String): TextView = TextView(this).apply {
         this.text = text
         setTextColor(Palette.textSubtle)
@@ -341,7 +267,4 @@ class DecryptActivity : Activity() {
     private fun dp(value: Int): Int = Math.round(
         TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, value.toFloat(), resources.displayMetrics)
     )
-
-    private fun Exception.userMessage(): String =
-        message?.takeIf { it.isNotBlank() } ?: this::class.java.simpleName
 }

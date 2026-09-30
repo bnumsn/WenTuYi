@@ -17,6 +17,8 @@ internal object BitmapUtils {
     const val MAX_ENCRYPT_SIDE = 1600
     const val MAX_ENCRYPT_PIXELS = 2_560_000L
     const val MAX_COMPRESSED_ENCRYPT_BYTES = 360_000
+    internal const val MAX_QR_IMPORT_PIXELS = 6_000_000L
+    private const val MAX_QR_IMPORT_SIDE = 3072
 
     @Throws(IOException::class)
     fun decodeImportImage(resolver: ContentResolver, uri: Uri): Bitmap {
@@ -26,6 +28,26 @@ internal object BitmapUtils {
         // Force ARGB_8888 so ZXing's getPixels() works; some OEM decoders default to
         // Config.HARDWARE which is opaque to CPU readback.
         val options = BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.ARGB_8888 }
+        return resolver.openInputStream(uri).useNotNull("无法读取图片") {
+            BitmapFactory.decodeStream(it, null, options) ?: throw IllegalArgumentException("图片格式不支持")
+        }
+    }
+
+    /** Sequential QR import uses a smaller, opaque bitmap budget than photo viewing. */
+    @Throws(IOException::class)
+    fun decodeQrImportImage(resolver: ContentResolver, uri: Uri): Bitmap {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        resolver.openInputStream(uri).useNotNull("无法读取图片") { BitmapFactory.decodeStream(it, null, bounds) }
+        validateBounds(bounds.outWidth, bounds.outHeight, "图片过大")
+        var sample = 1
+        while (bounds.outWidth / sample > MAX_QR_IMPORT_SIDE || bounds.outHeight / sample > MAX_QR_IMPORT_SIDE
+            || (bounds.outWidth / sample).toLong() * (bounds.outHeight / sample) > MAX_QR_IMPORT_PIXELS) {
+            sample *= 2
+        }
+        val options = BitmapFactory.Options().apply {
+            inSampleSize = sample
+            inPreferredConfig = Bitmap.Config.RGB_565
+        }
         return resolver.openInputStream(uri).useNotNull("无法读取图片") {
             BitmapFactory.decodeStream(it, null, options) ?: throw IllegalArgumentException("图片格式不支持")
         }
@@ -52,18 +74,19 @@ internal object BitmapUtils {
             }
         }
         val bitmap = decodeScaledForEncryption(resolver, uri)
-        val out = ByteArrayOutputStream()
-        var encoded: ByteArray? = null
-        var quality = 88
-        while (quality >= 60) {
-            out.reset()
-            if (!bitmap.compress(Bitmap.CompressFormat.JPEG, quality, out))
-                throw IOException("图片编码失败")
-            encoded = out.toByteArray()
-            if (encoded.size <= MAX_COMPRESSED_ENCRYPT_BYTES) break
-            quality -= 7
-        }
-        return encoded?.takeIf { it.isNotEmpty() } ?: throw IOException("图片编码失败")
+        try {
+            val out = ByteArrayOutputStream()
+            var encoded: ByteArray? = null
+            var quality = 88
+            while (quality >= 60) {
+                out.reset()
+                if (!bitmap.compress(Bitmap.CompressFormat.JPEG, quality, out)) throw IOException("图片编码失败")
+                encoded = out.toByteArray()
+                if (encoded.size <= MAX_COMPRESSED_ENCRYPT_BYTES) break
+                quality -= 7
+            }
+            return encoded?.takeIf { it.isNotEmpty() } ?: throw IOException("图片编码失败")
+        } finally { bitmap.recycle() }
     }
 
     private fun readSmallImageBytes(resolver: ContentResolver, uri: Uri, maxBytes: Int): ByteArray? {

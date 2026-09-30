@@ -15,6 +15,7 @@ import android.media.ImageReader
 import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.Looper
 import android.util.Size
 import android.util.TypedValue
 import android.view.Gravity
@@ -36,7 +37,7 @@ import com.google.zxing.common.HybridBinarizer
  * keeping the AOSP-only dependency profile. Deliberately narrow: it previews the back
  * camera, decodes the first QR it sees from the Y (luminance) plane, and returns the raw
  * text via [EXTRA_QR_TEXT]. All content routing (identity vs encrypted payload) stays in
- * [ScanActivity.routeScannedTexts], so this unverified-by-CI camera code can't affect how
+ * [ScanActivity], so this unverified-by-CI camera code can't affect how
  * a scanned key/message is handled.
  */
 class CameraScanActivity : Activity() {
@@ -55,13 +56,12 @@ class CameraScanActivity : Activity() {
     private var bgThread: HandlerThread? = null
     private var bgHandler: Handler? = null
     private var analysisSize: Size = Size(1280, 720)
+    private var previewSurface: Surface? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val lifecycle = CameraLifecycleGuard()
 
     @Volatile private var done = false
     private var opening = false   // true between openCamera() and onOpened/onError, closes the re-entry window
-    private val zxing = MultiFormatReader().apply {
-        setHints(mapOf(DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE)))
-    }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Palette.refresh(this)
@@ -83,6 +83,7 @@ class CameraScanActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        lifecycle.resume()
         done = false
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.CAMERA), REQ_CAMERA_PERMISSION)
@@ -94,6 +95,7 @@ class CameraScanActivity : Activity() {
     }
 
     override fun onPause() {
+        lifecycle.pause()
         closeCamera()
         stopBackgroundThread()
         super.onPause()
@@ -103,6 +105,7 @@ class CameraScanActivity : Activity() {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == REQ_CAMERA_PERMISSION) {
             if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
+                if (!lifecycle.accepts(lifecycle.token())) return
                 startBackgroundThread()
                 if (textureView.isAvailable) openCamera()
                 else textureView.surfaceTextureListener = surfaceListener
@@ -116,7 +119,10 @@ class CameraScanActivity : Activity() {
     private val surfaceListener = object : TextureView.SurfaceTextureListener {
         override fun onSurfaceTextureAvailable(s: SurfaceTexture, w: Int, h: Int) = openCamera()
         override fun onSurfaceTextureSizeChanged(s: SurfaceTexture, w: Int, h: Int) {}
-        override fun onSurfaceTextureDestroyed(s: SurfaceTexture) = true
+        override fun onSurfaceTextureDestroyed(s: SurfaceTexture): Boolean {
+            closeCamera()
+            return true
+        }
         override fun onSurfaceTextureUpdated(s: SurfaceTexture) {}
     }
 
@@ -124,7 +130,8 @@ class CameraScanActivity : Activity() {
         // Guard against a second open (surface-available + onResume/permission-result can
         // all fire) leaking the prior ImageReader/device. `opening` also covers the window
         // between openCamera() and onOpened(), where cameraDevice is still null.
-        if (cameraDevice != null || opening) return
+        val generation = lifecycle.token()
+        if (!lifecycle.accepts(generation) || done || bgHandler == null || cameraDevice != null || opening) return
         runCatching { imageReader?.close() }; imageReader = null
         val manager = getSystemService(CAMERA_SERVICE) as CameraManager
         try {
@@ -142,76 +149,104 @@ class CameraScanActivity : Activity() {
 
             imageReader = ImageReader.newInstance(
                 analysisSize.width, analysisSize.height, android.graphics.ImageFormat.YUV_420_888, 2
-            ).apply { setOnImageAvailableListener(onFrame, bgHandler) }
+            ).apply { setOnImageAvailableListener(frameListener(generation), bgHandler) }
 
-            if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) return
-            manager.openCamera(cameraId, stateCallback, bgHandler)
+            if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+                closeCamera()
+                return
+            }
+            // Resource ownership stays on the main thread. Frame decoding alone runs
+            // on the background handler, and every callback carries this open's token.
+            manager.openCamera(cameraId, stateCallback(generation), mainHandler)
         } catch (e: Exception) {
             fail("打开相机失败：${e.message}")
         }
     }
 
-    private val stateCallback = object : CameraDevice.StateCallback() {
+    private fun stateCallback(generation: Long) = object : CameraDevice.StateCallback() {
         override fun onOpened(device: CameraDevice) {
+            if (!lifecycle.accepts(generation)) { device.close(); return }
             opening = false
             cameraDevice = device
-            startPreview(device)
+            startPreview(device, generation)
         }
-        override fun onDisconnected(device: CameraDevice) { opening = false; device.close(); cameraDevice = null }
+        override fun onDisconnected(device: CameraDevice) {
+            device.close()
+            if (!lifecycle.accepts(generation)) return
+            opening = false
+            if (cameraDevice === device) cameraDevice = null
+        }
         override fun onError(device: CameraDevice, error: Int) {
-            opening = false; device.close(); cameraDevice = null; fail("相机错误：$error")
+            device.close()
+            if (!lifecycle.accepts(generation)) return
+            opening = false
+            if (cameraDevice === device) cameraDevice = null
+            fail("相机错误：$error")
         }
     }
 
-    private fun startPreview(device: CameraDevice) {
+    private fun startPreview(device: CameraDevice, generation: Long) {
         try {
+            if (!lifecycle.accepts(generation) || cameraDevice !== device) return
             val texture = textureView.surfaceTexture ?: return
+            val readerSurface = imageReader?.surface ?: return
             texture.setDefaultBufferSize(analysisSize.width, analysisSize.height)
-            val previewSurface = Surface(texture)
-            val readerSurface = imageReader!!.surface
+            val surface = Surface(texture)
+            previewSurface?.release()
+            previewSurface = surface
             val request = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
-                addTarget(previewSurface)
+                addTarget(surface)
                 addTarget(readerSurface)
                 set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
             }
             @Suppress("DEPRECATION")
-            device.createCaptureSession(listOf(previewSurface, readerSurface),
+            device.createCaptureSession(listOf(surface, readerSurface),
                 object : CameraCaptureSession.StateCallback() {
                     override fun onConfigured(session: CameraCaptureSession) {
+                        if (!lifecycle.accepts(generation) || cameraDevice !== device) { session.close(); return }
                         captureSession = session
-                        runCatching { session.setRepeatingRequest(request.build(), null, bgHandler) }
+                        runCatching { session.setRepeatingRequest(request.build(), null, mainHandler) }
                             .onFailure { fail("预览启动失败：${it.message}") }
                     }
-                    override fun onConfigureFailed(session: CameraCaptureSession) = fail("相机会话配置失败")
-                }, bgHandler)
+                    override fun onConfigureFailed(session: CameraCaptureSession) {
+                        session.close()
+                        if (lifecycle.accepts(generation)) fail("相机会话配置失败")
+                    }
+                }, mainHandler)
         } catch (e: Exception) {
             fail("预览启动失败：${e.message}")
         }
     }
 
-    private val onFrame = ImageReader.OnImageAvailableListener { reader ->
-        // acquireLatestImage throws IllegalStateException if the reader was closed by a
-        // racing onPause(); swallow it so the listener thread never crashes.
-        val image = try { reader.acquireLatestImage() } catch (e: Exception) { null }
-            ?: return@OnImageAvailableListener
-        try {
-            if (done) return@OnImageAvailableListener
-            val plane = image.planes[0]
-            val buffer = plane.buffer
-            val data = ByteArray(buffer.remaining())
-            buffer.get(data)
-            // Y plane: rowStride is the true data width; crop to the visible image rect.
-            val source = PlanarYUVLuminanceSource(
-                data, plane.rowStride, image.height, 0, 0, image.width, image.height, false)
-            val text = try {
-                zxing.decodeWithState(BinaryBitmap(HybridBinarizer(source)))?.text
-            } catch (e: Exception) { null } finally { zxing.reset() }
-            if (text != null && !done) {
-                done = true
-                runOnUiThread { returnResult(text) }
-            }
-        } finally {
-            image.close()
+    private fun frameListener(generation: Long): ImageReader.OnImageAvailableListener {
+        // A paused handler may finish one frame while a resumed camera starts another.
+        // Each open owns its reader, decoder and token; old frames cannot finish a new scan.
+        val zxing = MultiFormatReader().apply {
+            setHints(mapOf(DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE)))
+        }
+        return ImageReader.OnImageAvailableListener { reader ->
+            val image = try { reader.acquireLatestImage() } catch (e: Exception) { null }
+                ?: return@OnImageAvailableListener
+            try {
+                if (done || !lifecycle.accepts(generation)) return@OnImageAvailableListener
+                val plane = image.planes[0]
+                val buffer = plane.buffer
+                val data = ByteArray(buffer.remaining())
+                buffer.get(data)
+                val source = PlanarYUVLuminanceSource(
+                    data, plane.rowStride, image.height, 0, 0, image.width, image.height, false)
+                val text = try {
+                    zxing.decodeWithState(BinaryBitmap(HybridBinarizer(source)))?.text
+                } catch (e: Exception) { null } finally { zxing.reset() }
+                if (text != null) {
+                    mainHandler.post {
+                        if (!done && lifecycle.accepts(generation)) {
+                            done = true
+                            returnResult(text)
+                        }
+                    }
+                }
+            } finally { runCatching { image.close() } }
         }
     }
 
@@ -221,12 +256,10 @@ class CameraScanActivity : Activity() {
     }
 
     private fun fail(message: String) {
-        if (done) return
+        if (done || !lifecycle.accepts(lifecycle.token())) return
         done = true
-        runOnUiThread {
-            Toast.makeText(this, message, Toast.LENGTH_LONG).show()
-            finish()
-        }
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+        finish()
     }
 
     private fun chooseAnalysisSize(sizes: Array<Size>): Size {
@@ -252,9 +285,11 @@ class CameraScanActivity : Activity() {
     }
 
     private fun closeCamera() {
+        lifecycle.invalidate()
         opening = false
         runCatching { captureSession?.close() }; captureSession = null
         runCatching { cameraDevice?.close() }; cameraDevice = null
         runCatching { imageReader?.close() }; imageReader = null
+        runCatching { previewSurface?.release() }; previewSurface = null
     }
 }

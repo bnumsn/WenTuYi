@@ -55,7 +55,7 @@ done
 [ -n "$MODE" ] || { usage; exit 2; }
 # "-" reads the value from stdin, keeping sensitive text off this wrapper's own argv.
 if [ "$VALUE" = "-" ]; then
-    VALUE="$(cat)"
+    IFS= read -r -d '' VALUE || [ "$?" -eq 1 ]
 fi
 mkdir -p "$OUT_DIR"
 
@@ -114,7 +114,7 @@ send_text() {
     case "$APP" in
         focused)
             [ -x "$INSERT_SCRIPT" ] || { echo "missing insert script: $INSERT_SCRIPT" >&2; exit 2; }
-            "$INSERT_SCRIPT" --text "$body"
+            printf '%s' "$body" | "$INSERT_SCRIPT" --text -
             ;;
         claws-mail)
             claws_cmd=(claws-mail)

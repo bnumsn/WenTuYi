@@ -345,22 +345,36 @@ class WentuyiSmokeTests {
             .getSharedPreferences("wentuyi_settings", Context.MODE_PRIVATE)
         val original = prefs.getString("contacts_json", null)
         try {
+            // Simulate a real pre-migration install. The anchor is deliberately outside
+            // preferences: editing/deleting a prefs migration flag cannot reset it.
+            val keyStore = java.security.KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+            keyStore.deleteEntry("wentuyi_contacts_integrity_v1")
             val peer = generateIdentity()
             val plain = "[{\"name\":\"legacy\",\"publicKey\":\"" +
                 Base64.encodeToString(peer.publicKey, Base64.NO_WRAP or Base64.URL_SAFE) +
                 "\",\"verified\":true}]"
 
-            // 1. A pre-v0.6.1 plaintext list is still readable, and gets re-stored wrapped.
+            // 1. Legacy keys/names survive, but their unauthenticated verified flag does not.
             prefs.edit().putString("contacts_json", plain).commit()
-            assertEquals(plain, WentuyiSettings.getContactsJson(context))
+            val sanitized = WentuyiSettings.getContactsJson(context)
+            assertEquals("legacy", KeyExchange.listContacts(context).single().name)
+            assertTrue(!KeyExchange.listContacts(context).single().verified)
             val migrated = prefs.getString("contacts_json", null)
             assertNotNull(migrated)
             assertTrue("plaintext contact list must not survive a read",
                 migrated!!.startsWith("KS2:") || migrated.startsWith("KS1:"))
             assertEquals("wrapping must not change what is read back",
-                plain, WentuyiSettings.getContactsJson(context))
+                sanitized, WentuyiSettings.getContactsJson(context))
 
-            // 2. Flipping a byte of the wrapped blob must fail the GCM tag, not be trusted.
+            // 2. Replacing the ciphertext with legacy JSON must not reopen migration,
+            // even if the attacker also supplies/removes arbitrary preference flags.
+            prefs.edit().putString("contacts_json", plain).remove("contacts_migrated").commit()
+            try {
+                WentuyiSettings.getContactsJson(context)
+                fail("plaintext downgrade must not be accepted after migration")
+            } catch (e: IllegalStateException) { /* expected */ }
+
+            // 3. Flipping a byte of the wrapped blob must fail the GCM tag, not be trusted.
             val body = migrated.substringAfter(':')
             val raw = Base64.decode(body, Base64.NO_WRAP)
             raw[raw.size - 1] = (raw[raw.size - 1].toInt() xor 0x01).toByte()
@@ -513,13 +527,12 @@ class WentuyiSmokeTests {
         }
     }
 
-    @Test fun sas_is_eight_digits() {
+    @Test fun safety_code_contains_the_full_256_bits() {
         val alice = generateIdentity()
         val bob = generateIdentity()
         val sas = KeyExchange.shortAuthString(alice, bob.publicKey)
-        assertEquals("SAS must be 8 digits", 8, sas.length)
-        assertTrue("SAS is all digits", sas.all { it.isDigit() })
-        // Both peers must still agree after the widening to 8 digits.
+        assertEquals("safety code has sixteen groups", 16, sas.split(' ').size)
+        assertTrue("full safety code", sas.matches(Regex("[0-9A-F]{4}( [0-9A-F]{4}){15}")))
         assertEquals(sas, KeyExchange.shortAuthString(bob, alice.publicKey))
     }
 
@@ -542,11 +555,19 @@ class WentuyiSmokeTests {
 
     @Test fun anti_ocr_image_renders_and_is_bounded() {
         val bm = TextImageCodec.renderAntiOcrTextImage(SOURCE)
-        assertTrue("anti-ocr bitmap > 0", bm.width > 0 && bm.height > 0)
-        assertTrue("height capped", bm.height <= 8192)
-        // A huge paste must not blow up memory — height stays capped.
-        val huge = TextImageCodec.renderAntiOcrTextImage("超长\n".repeat(5000))
-        assertTrue("huge input height capped", huge.height <= 8192)
+        try {
+            assertTrue("anti-ocr bitmap > 0", bm.width > 0 && bm.height > 0)
+            assertTrue("height bounded", bm.height <= 8192)
+        } finally { bm.recycle() }
+        // Keeping only the top 8192 pixels would silently discard most of this paste.
+        // Reject it explicitly before allocating an oversized or truncated bitmap.
+        try {
+            val huge = TextImageCodec.renderAntiOcrTextImage("超长\n".repeat(5000))
+            huge.recycle()
+            fail("huge input must be rejected instead of silently cropping the text")
+        } catch (e: IllegalArgumentException) {
+            assertTrue("caller receives a usable too-long message", e.message?.contains("文字过长") == true)
+        }
     }
 
     @Test fun image_store_uri_readable_cross_process() {

@@ -1,3 +1,5 @@
+import java.io.ByteArrayOutputStream
+
 plugins {
     id("org.jetbrains.kotlin.jvm")
     application
@@ -15,6 +17,12 @@ kotlin {
 dependencies {
     implementation(project(":shared-protocol"))
     implementation("com.google.zxing:core:3.5.3")
+    testImplementation(kotlin("test"))
+}
+
+tasks.test {
+    // Integration tests launch independent JVMs against the real CLI entry point.
+    systemProperty("wentuyi.test.classpath", sourceSets["test"].runtimeClasspath.asPath)
 }
 
 application {
@@ -29,5 +37,12 @@ tasks.register<JavaExec>("generateFixtures") {
     description = "Regenerate protocol-fixtures/vectors.txt from the authoritative codec"
     classpath = sourceSets["main"].runtimeClasspath
     mainClass.set("com.wentuyi.cli.FixtureGenerator")
-    standardOutput = rootProject.file("protocol-fixtures/vectors.txt").outputStream()
+    // Configuration must never touch the frozen vectors. Capture first, publish only
+    // after a successful generator run, and close the file even if writing fails.
+    val generated = ByteArrayOutputStream()
+    standardOutput = generated
+    doFirst { generated.reset() }
+    doLast {
+        rootProject.file("protocol-fixtures/vectors.txt").outputStream().use { generated.writeTo(it) }
+    }
 }

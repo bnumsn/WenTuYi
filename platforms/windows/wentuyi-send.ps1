@@ -61,7 +61,7 @@ function Set-DesktopCliRuntime {
 function Get-WentuyiPassphrase([switch] $AllowMissing) {
     if ($env:WENTUYI_PASSPHRASE) { return $env:WENTUYI_PASSPHRASE }
     if (Test-Path $PassphraseFile) {
-        $value = (Get-Content -LiteralPath $PassphraseFile -Raw).Trim()
+        $value = (Get-Content -LiteralPath $PassphraseFile -Raw -Encoding UTF8).Trim()
         if ($value) { return $value }
     }
     if ($AllowMissing) { return $null }
@@ -83,7 +83,7 @@ function Invoke-WentuyiCli([string[]] $ArgsList, [string] $Passphrase = $null, [
             $output = & $CliScript @ArgsList
         }
         if ($LASTEXITCODE -ne 0) { throw "desktop-cli failed: $($output -join "`n")" }
-        return @($output | Where-Object { $_ -and $_.Trim() })
+        return @(($output -join "`n") -split "`r?`n" | Where-Object { $_ -and $_.Trim() })
     } finally {
         if ($null -eq $prev) { Remove-Item Env:\WENTUYI_PASSPHRASE -ErrorAction SilentlyContinue }
         else { $env:WENTUYI_PASSPHRASE = $prev }
@@ -173,7 +173,7 @@ if ($Text) { Send-Body $Text; return }
 if ($EncryptText) {
     $sendArgs = @("send")
     if ($Peer) { $sendArgs += @("--peer", $Peer) }
-    $payload = (Invoke-WentuyiCli $sendArgs -Passphrase (Get-WentuyiPassphrase -AllowMissing) -StdinText $EncryptText)[0]
+    $payload = @(Invoke-WentuyiCli $sendArgs -Passphrase (Get-WentuyiPassphrase -AllowMissing) -StdinText $EncryptText)[0]
     Send-Body $payload
     return
 }
@@ -188,7 +188,7 @@ if ($EncryptedQr) {
     # protocol applies, `payload-qr` only renders it.
     $sendArgs = @("send")
     if ($Peer) { $sendArgs += @("--peer", $Peer) }
-    $payload = (Invoke-WentuyiCli $sendArgs -Passphrase (Get-WentuyiPassphrase -AllowMissing) -StdinText $EncryptedQr)[0]
+    $payload = @(Invoke-WentuyiCli $sendArgs -Passphrase (Get-WentuyiPassphrase -AllowMissing) -StdinText $EncryptedQr)[0]
     $files = Invoke-WentuyiCli @("payload-qr", "--out-dir", $OutDir, "--prefix", "wentuyi-qr") -StdinText $payload
     Send-Files @($files)
     return

@@ -33,7 +33,10 @@ class ImageContentProvider : ContentProvider() {
                 .build()
     }
 
-    override fun onCreate(): Boolean = true
+    override fun onCreate(): Boolean {
+        context?.let(ImageStore::pruneNow)
+        return true
+    }
 
     override fun getType(uri: Uri): String = "image/png"
 
@@ -89,6 +92,10 @@ class ImageContentProvider : ContentProvider() {
             throw FileNotFoundException("Bad image name")
         val file = File(File(ctx.cacheDir, CACHE_DIR), name)
         if (!file.isFile) throw FileNotFoundException(name)
+        if (ImageStore.isExpired(file)) {
+            file.delete()
+            throw FileNotFoundException("Image expired")
+        }
         return file
     }
 }

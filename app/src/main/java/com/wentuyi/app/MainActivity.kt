@@ -191,7 +191,7 @@ class MainActivity : Activity() {
         // (i.e. only after replacing your keyboard) or from a clipboard shortcut that
         // appeared only when the clipboard happened to hold plain text.
         val encryptButton = Button(this).apply {
-            text = "加密一段文字"
+            text = "在文图易内输入并加密"
             isAllCaps = false
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
             setTextColor(Palette.onAccent)
@@ -202,6 +202,8 @@ class MainActivity : Activity() {
             setOnClickListener { startActivity(EncryptActivity.intentFor(this@MainActivity, "")) }
         }
         root.addView(encryptButton, matchWrapWithTop(16))
+        root.addView(textView("先在文图易中输入，再把密文分享给聊天应用。键盘直接转换聊天框内容时，聊天应用已能读取原文。", 14f, false)
+            .apply { setTextColor(Palette.textSubtle) }, matchWrapWithTop(6))
 
         addPrimaryButton(root, "我的身份码 / 共享密钥") {
             startActivity(Intent(this, KeyManagementActivity::class.java))

@@ -50,9 +50,9 @@ object DoubleRatchet {
     private const val GCM_TAG_BITS = 128
     private const val MAX_SKIP = 1000            // bound on skipped keys per single chain step
     private const val MAX_SKIP_TOTAL = 2000      // global cap on the persisted skipped-key cache
-    private const val MAX_PAYLOAD_CHARS = 512 * 1024  // reject absurd inputs before decoding
     private const val EPOCH_BYTES = 8
     private const val HEADER_LEN = EPOCH_BYTES + 32 + 4 + 4  // epoch(8) + ratchetPub(32) + PN(4) + N(4)
+    const val MAX_PLAINTEXT_BYTES = PayloadLimits.MAX_PACKED_BYTES - HEADER_LEN - PayloadLimits.GCM_TAG_BYTES
 
     private val INFO_INIT = "WTY5-root-init".toByteArray(StandardCharsets.US_ASCII)
     private val INFO_ROOT = "WTY5-root".toByteArray(StandardCharsets.US_ASCII)
@@ -77,14 +77,16 @@ object DoubleRatchet {
     )
 
     /**
-     * A fresh session epoch. Wall-clock millis, so a peer that reinstalled and lost its
-     * state still produces an epoch that sorts *after* the one the other side remembers —
-     * which is exactly the signal [decryptOn] needs to tell "they reset" apart from
-     * "garbage". Epochs are minted at most once per bootstrap (days/months apart), so
-     * ordinary clock skew is irrelevant; only a clock set far into the past would produce
-     * an epoch the peer rejects as stale.
+     * A fresh session epoch, strictly newer than [afterEpoch]. Callers resetting a known
+     * session must pass its last epoch so resets in the same millisecond, or after a clock
+     * rollback, cannot reuse a stale epoch. If local state was lost, the no-argument form
+     * uses wall-clock millis; a peer with a later remembered epoch still needs an explicit
+     * reset. Exhausting the signed 64-bit epoch space is rejected rather than wrapping.
      */
-    fun newEpoch(): Long = System.currentTimeMillis()
+    fun newEpoch(afterEpoch: Long = 0L): Long {
+        require(afterEpoch < Long.MAX_VALUE) { "session epoch exhausted" }
+        return maxOf(System.currentTimeMillis(), afterEpoch + 1)
+    }
 
     /** Thrown when a WTY5 header names a different session than [State.epoch] holds. */
     class EpochMismatch(val headerEpoch: Long, val stateEpoch: Long) :
@@ -111,10 +113,10 @@ object DoubleRatchet {
     /** Reads the session epoch out of a WTY5 envelope without any key material. */
     fun peekEpoch(payload: String?): Long? {
         if (payload == null || !payload.startsWith(PREFIX_V5)) return null
-        if (payload.length > MAX_PAYLOAD_CHARS) return null
+        if (payload.length > PayloadLimits.MAX_PAYLOAD_CHARS) return null
         val raw = try { Encoding.b64Decode(payload.substring(PREFIX_V5.length)) }
             catch (e: IllegalArgumentException) { return null }
-        if (raw.size <= HEADER_LEN) return null
+        if (raw.size < HEADER_LEN + PayloadLimits.GCM_TAG_BYTES) return null
         return readLong(raw, 0)
     }
 
@@ -151,19 +153,25 @@ object DoubleRatchet {
     // ─── Encrypt / decrypt ────────────────────────────────────────────────────
 
     fun encrypt(state: State, plaintext: ByteArray): String {
+        require(plaintext.size <= MAX_PLAINTEXT_BYTES) { "plaintext too large (maximum $MAX_PLAINTEXT_BYTES bytes)" }
         val cks = state.cks ?: throw GeneralSecurityException("棘轮发送链未建立")
         val (newCks, mk) = kdfChain(cks)
         val header = packHeader(state.epoch, state.dhsPub, state.pn, state.ns)
         try {
             val ct = aeadEncrypt(mk, plaintext, header)
-            CryptoUtils.wipe(state.cks)  // old sending chain key is now superseded
-            state.cks = newCks
-            state.ns += 1
             val packed = ByteArray(header.size + ct.size)
             System.arraycopy(header, 0, packed, 0, header.size)
             System.arraycopy(ct, 0, packed, header.size, ct.size)
-            return PREFIX_V5 + Encoding.b64(packed)
-        } finally { CryptoUtils.wipe(mk) }
+            val payload = PREFIX_V5 + Encoding.b64(packed)
+            // Commit only once the entire envelope exists, including Base64 encoding.
+            CryptoUtils.wipe(state.cks)
+            state.cks = newCks
+            state.ns += 1
+            return payload
+        } finally {
+            CryptoUtils.wipe(mk)
+            if (state.cks !== newCks) CryptoUtils.wipe(newCks)
+        }
     }
 
     /**
@@ -172,6 +180,7 @@ object DoubleRatchet {
      * and leaves [state] completely untouched — callers don't need to clone defensively.
      */
     fun decrypt(state: State, payload: String): ByteArray {
+        PayloadLimits.requirePayloadSize(payload)
         val work = clone(state)
         val plain = decryptOn(work, payload)
         commit(state, work)
@@ -192,9 +201,8 @@ object DoubleRatchet {
 
     private fun decryptOn(state: State, payload: String): ByteArray {
         if (!payload.startsWith(PREFIX_V5)) throw GeneralSecurityException("不是 WTY5 棘轮密文")
-        if (payload.length > MAX_PAYLOAD_CHARS) throw GeneralSecurityException("棘轮密文过大")
         val raw = Encoding.b64Decode(payload.substring(PREFIX_V5.length))
-        if (raw.size <= HEADER_LEN) throw GeneralSecurityException("棘轮密文不完整")
+        if (raw.size < HEADER_LEN + PayloadLimits.GCM_TAG_BYTES) throw GeneralSecurityException("棘轮密文不完整")
         val header = Arrays.copyOfRange(raw, 0, HEADER_LEN)
         val ct = Arrays.copyOfRange(raw, HEADER_LEN, raw.size)
         val epoch = readLong(header, 0)

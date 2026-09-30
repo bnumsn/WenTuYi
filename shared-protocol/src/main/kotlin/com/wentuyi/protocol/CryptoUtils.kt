@@ -11,6 +11,7 @@ import java.util.Arrays
 
 object CryptoUtils {
     private val random = SecureRandom()
+    private val argon2Budget = Argon2ResourceBudget()
 
     const val ARGON2_MEMORY_KB = 32 * 1024
     const val ARGON2_ITERATIONS = 3
@@ -25,7 +26,7 @@ object CryptoUtils {
         memoryKb: Int = ARGON2_MEMORY_KB,
         iterations: Int = ARGON2_ITERATIONS,
         parallelism: Int = ARGON2_PARALLELISM,
-    ): ByteArray {
+    ): ByteArray = argon2Budget.run(memoryKb, iterations, parallelism) {
         val params = Argon2Parameters.Builder(Argon2Parameters.ARGON2_id)
             .withVersion(Argon2Parameters.ARGON2_VERSION_13)
             .withMemoryAsKB(memoryKb)
@@ -37,7 +38,7 @@ object CryptoUtils {
         gen.init(params)
         val out = ByteArray(outLen)
         gen.generateBytes(passphrase, out)
-        return out
+        out
     }
 
     fun hkdfSha256(ikm: ByteArray, salt: ByteArray, info: ByteArray, outLen: Int = 32): ByteArray {

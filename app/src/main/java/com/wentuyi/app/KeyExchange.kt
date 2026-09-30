@@ -22,8 +22,8 @@ import org.json.JSONObject
  * for direct use with [SecurePayloadCodec.encryptTextWithSessionKey] / *WithSessionKey
  * (mode = KEY_MODE_SESSION_KEY).
  *
- * The 6-digit [shortAuthString] is intended for out-of-band verification (one party
- * reads it aloud, the other confirms) to defeat MITM during QR exchange.
+ * The full 256-bit [shortAuthString] must be compared through a trusted channel.
+ * Short numeric codes are insufficient for non-interactive public-key exchange.
  *
  * Public key is plain X25519 (32 bytes). QR payload uses a "WTYID1|<name>|<base64>"
  * canonical line, easy to ZXing-encode/decode and clearly distinguishable from
@@ -31,6 +31,7 @@ import org.json.JSONObject
  */
 object KeyExchange {
     const val QR_PREFIX = "WTYID1"
+    const val AUTH_VERSION = ProtoKE.AUTH_VERSION
 
     // The X25519 / SAS / backup / QR crypto now lives once in :shared-protocol; the methods
     // below delegate to it. This object keeps only the Android-specific surface — Identity /
@@ -70,13 +71,14 @@ object KeyExchange {
         val name: String,
         val publicKey: ByteArray,
         /**
-         * True only after the user has personally confirmed that the 8-digit SAS on
-         * their device matches what the peer reads from their own device. Defaults
+         * True only after the user has personally compared the complete safety code.
+         * Defaults
          * to false at scan time — added contacts are "preliminary" until both sides
          * verify out-of-band. The IME marks unverified targets visually so users
          * aren't lulled into thinking a MITM hasn't slipped between them.
          */
         val verified: Boolean = false,
+        val authVersion: Int = if (verified) AUTH_VERSION else 0,
     ) {
         val fingerprint: String get() = Encoding.Base32.encode(CryptoUtils.sha256(publicKey).copyOf(8))
 
@@ -88,27 +90,24 @@ object KeyExchange {
 
     // ─── Identity keypair ─────────────────────────────────────────────────────
 
-    fun getOrCreateIdentity(context: Context): Identity {
-        // Try to load; tolerate Keystore-corrupted pref by silently regenerating.
-        // The pref-bytes are scrap if loadIdentity throws, so overwriting is safe.
-        runCatching { WentuyiSettings.loadIdentity(context) }
-            .getOrNull()
+    fun getOrCreateIdentity(context: Context): Identity = synchronized(WentuyiSettings.cryptoStateLock) {
+        // An unreadable identity requires explicit recovery, never silent replacement.
+        WentuyiSettings.loadIdentity(context)
             ?.let { (pub, priv) -> return Identity(pub, priv) }
         val identity = generateIdentity()
-        WentuyiSettings.saveIdentity(context, identity.publicKey, identity.privateKey)
-        // Reached only when there was no readable identity — either first run (nothing to
-        // clear) or a corrupted-identity regen, which is a new identity → same clean-break
-        // invariant as replaceIdentity: drop stale sessions / verification.
+        // First generation is a clean break from any contacts/sessions already stored.
         onIdentityChanged(context)
+        WentuyiSettings.saveIdentity(context, identity.publicKey, identity.privateKey)
         return identity
     }
 
-    fun replaceIdentity(context: Context): Identity {
+    fun replaceIdentity(context: Context, discardUnreadableContacts: Boolean = false): Identity = synchronized(WentuyiSettings.cryptoStateLock) {
         val identity = generateIdentity()
-        WentuyiSettings.saveIdentity(context, identity.publicKey, identity.privateKey)
         // New identity is always a clean break — drop all WTY5 sessions and require
-        // re-verification (the mutual SAS depends on this identity).
-        onIdentityChanged(context)
+        // re-verification BEFORE saving it. A crash between these durable writes can
+        // only lose a session, never reuse an old session with the new identity.
+        onIdentityChanged(context, discardUnreadableContacts)
+        WentuyiSettings.saveIdentity(context, identity.publicKey, identity.privateKey)
         return identity
     }
 
@@ -117,9 +116,17 @@ object KeyExchange {
      * (they were rooted in the old identity's ECDH) and marks every contact unverified
      * (the mutual SAS changed, so prior out-of-band verification no longer holds).
      */
-    private fun onIdentityChanged(context: Context) {
+    private fun onIdentityChanged(context: Context, discardUnreadableContacts: Boolean = false) {
         WentuyiSettings.clearAllRatchets(context)
-        val downgraded = listContacts(context).map { it.copy(verified = false) }
+        val contacts = try {
+            listContacts(context)
+        } catch (e: Exception) {
+            if (!discardUnreadableContacts) throw e
+            // Only the explicit restore/replace flow can discard an unreadable list.
+            WentuyiSettings.setContactsJson(context, "[]")
+            emptyList()
+        }
+        val downgraded = contacts.map { it.copy(verified = false, authVersion = 0) }
         if (downgraded.any()) {
             val arr = JSONArray()
             for (c in downgraded) arr.put(c.toJson())
@@ -144,7 +151,7 @@ object KeyExchange {
         WentuyiSettings.hasIdentity(context) && !isIdentityReadable(context)
 
     /** Drops the corrupted identity pref so the next getOrCreate generates afresh. */
-    fun clearCorruptedIdentity(context: Context) {
+    fun clearCorruptedIdentity(context: Context): Unit = synchronized(WentuyiSettings.cryptoStateLock) {
         WentuyiSettings.clearIdentity(context)
     }
 
@@ -169,8 +176,8 @@ object KeyExchange {
         localized { ProtoKE.deriveSharedSecret(myIdentity.toProto(), peerPublic) }
 
     /**
-     * Derives an 8-digit Short Authentication String for out-of-band verification.
-     * Both peers must see the same number for the X25519 exchange to be trusted.
+     * Derives a complete 256-bit safety code for out-of-band verification.
+     * Both peers must compare every group, never a truncated prefix/suffix.
      */
     fun shortAuthString(myIdentity: Identity, peerPublic: ByteArray): String =
         localized { ProtoKE.shortAuthString(myIdentity.toProto(), peerPublic) }
@@ -195,15 +202,19 @@ object KeyExchange {
      * Callers who need the private key for an immediate ECDH should load it via
      * [WentuyiSettings.loadIdentity] (which re-reads from the wrapped store).
      */
-    fun restoreIdentityFromBackup(context: Context, backup: String): Identity {
+    fun restoreIdentityFromBackup(context: Context, backup: String, discardUnreadableContacts: Boolean = false): Identity = synchronized(WentuyiSettings.cryptoStateLock) {
         val identity = decodeBackup(backup)
         // Only a *change* of identity invalidates sessions — restoring the same identity
         // (e.g. onto a new device) must keep working. Compare before overwriting.
         val prevPub = runCatching { WentuyiSettings.loadIdentity(context)?.first }.getOrNull()
         val identityChanged = prevPub == null || !prevPub.contentEquals(identity.publicKey)
         try {
+            if (identityChanged) {
+                onIdentityChanged(context, discardUnreadableContacts)
+            } else if (discardUnreadableContacts && runCatching { listContacts(context) }.isFailure) {
+                onIdentityChanged(context, discardUnreadableContacts = true)
+            }
             WentuyiSettings.saveIdentity(context, identity.publicKey, identity.privateKey)
-            if (identityChanged) onIdentityChanged(context)
             // The Identity instance we hand back keeps publicKey but not privateKey;
             // callers should reload from settings if they need it.
             return Identity(identity.publicKey, ByteArray(0))
@@ -223,9 +234,10 @@ object KeyExchange {
 
     // ─── Contact storage (JSON in SharedPreferences) ──────────────────────────
 
-    fun listContacts(context: Context): List<Contact> {
+    fun listContacts(context: Context): List<Contact> = synchronized(WentuyiSettings.cryptoStateLock) {
         val arr = JSONArray(WentuyiSettings.getContactsJson(context))
         val out = ArrayList<Contact>(arr.length())
+        var migrated = false
         for (i in 0 until arr.length()) {
             val obj = arr.getJSONObject(i)
             val name = obj.optString("name", "未命名")
@@ -237,20 +249,42 @@ object KeyExchange {
                 continue
             }
             if (key.size == 32) {
-                out += Contact(name, key, verified = obj.optBoolean("verified", false))
+                val claimedVerified = obj.optBoolean("verified", false)
+                val version = obj.optInt("authVersion", 0)
+                val verified = claimedVerified && version == AUTH_VERSION
+                if (claimedVerified && !verified) {
+                    obj.remove("verified")
+                    obj.remove("authVersion")
+                    migrated = true
+                }
+                out += Contact(name, key, verified = verified, authVersion = if (verified) AUTH_VERSION else 0)
             }
         }
-        return out
+        if (migrated) WentuyiSettings.setContactsJson(context, arr.toString())
+        out
     }
 
-    fun saveContact(context: Context, contact: Contact) {
-        val existing = listContacts(context).filterNot { it.publicKey.contentEquals(contact.publicKey) }
+    fun saveContact(context: Context, contact: Contact): Unit = synchronized(WentuyiSettings.cryptoStateLock) {
+        val current = listContacts(context)
+        val previous = current.firstOrNull { it.publicKey.contentEquals(contact.publicKey) }
+        val updated = if (previous == null) contact else contact.copy(
+            verified = previous.verified, authVersion = previous.authVersion)
+        val existing = current.filterNot { it.publicKey.contentEquals(contact.publicKey) }
         val arr = JSONArray()
-        for (c in existing + contact) arr.put(c.toJson())
+        for (c in existing + updated) arr.put(c.toJson())
         WentuyiSettings.setContactsJson(context, arr.toString())
     }
 
-    fun removeContact(context: Context, fingerprint: String) {
+    /** A dialog may outlive an identity/verification edit; rename only the current record. */
+    fun renameContact(context: Context, publicKey: ByteArray, name: String): Unit = synchronized(WentuyiSettings.cryptoStateLock) {
+        val current = listContacts(context)
+        check(current.any { it.publicKey.contentEquals(publicKey) }) { "联系人已移除，请重新选择" }
+        val arr = JSONArray()
+        current.forEach { arr.put((if (it.publicKey.contentEquals(publicKey)) it.copy(name = name) else it).toJson()) }
+        WentuyiSettings.setContactsJson(context, arr.toString())
+    }
+
+    fun removeContact(context: Context, fingerprint: String): Unit = synchronized(WentuyiSettings.cryptoStateLock) {
         val remaining = listContacts(context).filterNot { it.fingerprint == fingerprint }
         // Drop any ratchet session too — re-adding the contact should re-bootstrap fresh.
         WentuyiSettings.clearRatchet(context, fingerprint)
@@ -259,10 +293,23 @@ object KeyExchange {
         WentuyiSettings.setContactsJson(context, arr.toString())
     }
 
+    /** Explicit user recovery from an unreadable contact list; never resets the migration anchor. */
+    fun clearContactsAndSessions(context: Context): Unit = synchronized(WentuyiSettings.cryptoStateLock) {
+        WentuyiSettings.clearAllRatchets(context)
+        WentuyiSettings.setContactsJson(context, "[]")
+    }
+
     /** Toggles the verified flag for the contact with [fingerprint]. */
-    fun setContactVerified(context: Context, fingerprint: String, verified: Boolean) {
+    fun setContactVerified(context: Context, fingerprint: String, verified: Boolean, expectedSafetyCode: String? = null): Unit = synchronized(WentuyiSettings.cryptoStateLock) {
+        if (verified && expectedSafetyCode != null) {
+            val identity = loadIdentity(context) ?: throw IllegalStateException("请先恢复身份")
+            val contact = findContact(context, fingerprint) ?: throw IllegalStateException("联系人已移除")
+            check(shortAuthString(identity, contact.publicKey) == expectedSafetyCode) {
+                "身份或联系人已变化，请重新核对完整安全码"
+            }
+        }
         val updated = listContacts(context).map {
-            if (it.fingerprint == fingerprint) it.copy(verified = verified) else it
+            if (it.fingerprint == fingerprint) it.copy(verified = verified, authVersion = if (verified) AUTH_VERSION else 0) else it
         }
         val arr = JSONArray()
         for (c in updated) arr.put(c.toJson())
@@ -272,7 +319,10 @@ object KeyExchange {
     private fun Contact.toJson(): JSONObject = JSONObject().apply {
         put("name", name)
         put("publicKey", Base64.encodeToString(publicKey, Base64.NO_WRAP or Base64.URL_SAFE))
-        if (verified) put("verified", true)
+        if (verified && authVersion == AUTH_VERSION) {
+            put("verified", true)
+            put("authVersion", AUTH_VERSION)
+        }
     }
 
     fun findContact(context: Context, fingerprint: String): Contact? =
@@ -286,7 +336,7 @@ object KeyExchange {
      *
      * Returns the count of removed contacts (for surfacing a Toast if non-zero).
      */
-    fun pruneInvalidContacts(context: Context): Int {
+    fun pruneInvalidContacts(context: Context): Int = synchronized(WentuyiSettings.cryptoStateLock) {
         val identity = loadIdentity(context) ?: return 0  // no identity → no way to test
         val current = listContacts(context)
         val valid = current.filter { contact ->
@@ -299,11 +349,7 @@ object KeyExchange {
         if (valid.size != current.size) {
             val arr = JSONArray()
             for (c in valid) {
-                arr.put(JSONObject().apply {
-                    put("name", c.name)
-                    put("publicKey", Base64.encodeToString(c.publicKey, Base64.NO_WRAP or Base64.URL_SAFE))
-                    if (c.verified) put("verified", true)
-                })
+                arr.put(c.toJson())
             }
             WentuyiSettings.setContactsJson(context, arr.toString())
         }

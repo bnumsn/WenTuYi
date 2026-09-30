@@ -35,7 +35,7 @@ import kotlinx.coroutines.withContext
  *
  * The X25519 identity QR is the recommended path: scan a peer's identity from
  * [ScanActivity] to derive a deterministic session key and verify out-of-band via
- * the 8-digit SAS. The "共享密钥" controls remain for users who haven't migrated.
+ * the complete 256-bit safety code. The "共享密钥" controls remain for users who haven't migrated.
  */
 class KeyManagementActivity : Activity() {
 
@@ -119,42 +119,62 @@ class KeyManagementActivity : Activity() {
 
     private fun refresh() {
         scope.launch {
+            var identityError: String? = null
             val identity = try { KeyExchange.getOrCreateIdentity(this@KeyManagementActivity) }
-                catch (e: Exception) { statusView.text = "身份码读取失败：${e.message}"; return@launch }
-            val bitmap = withContext(Dispatchers.Default) {
-                TextImageCodec.renderIdentityQr(identity, "文图易用户")
+                catch (e: Exception) { identityError = "身份码读取失败：${e.message}。请从备份恢复或重新生成。"; null }
+            if (identity != null) {
+                val bitmap = withContext(Dispatchers.Default) {
+                    TextImageCodec.renderIdentityQr(identity, "文图易用户")
+                }
+                identityImage.setImageBitmap(bitmap)
+                identityFingerprint.text = "我的指纹：${identity.fingerprint}"
+            } else {
+                identityImage.setImageDrawable(null)
+                identityFingerprint.text = "身份不可读取；恢复入口仍可使用"
             }
-            identityImage.setImageBitmap(bitmap)
-            identityFingerprint.text = "我的指纹：${identity.fingerprint}"
             refreshContacts(identity)
-            refreshPassphraseStatus()
+            if (identityError != null) statusView.text = identityError else refreshPassphraseStatus()
         }
     }
 
-    private fun refreshContacts(myIdentity: KeyExchange.Identity) {
+    private fun refreshContacts(myIdentity: KeyExchange.Identity?) {
         contactsContainer.removeAllViews()
         // Migrate any v0.4 / v0.5 contacts saved before the low-order pubkey check.
         // Silent if nothing changes; surface the count when poisoned rows were dropped
         // so the user knows why a name vanished.
-        val pruned = try {
-            KeyExchange.pruneInvalidContacts(this)
+        val contacts = try {
+            val pruned = if (myIdentity != null) KeyExchange.pruneInvalidContacts(this) else 0
+            if (pruned > 0) statusView.text = "已清理 $pruned 个无效联系人（低阶/损坏公钥）"
+            KeyExchange.listContacts(this)
         } catch (e: Exception) {
             // The contact blob is Keystore-wrapped and fails closed; show why rather than
             // crashing the screen the user came to in order to fix it.
             statusView.text = e.message ?: "联系人列表读取失败"
-            contactsContainer.addView(subtle("联系人列表无法读取，请重新扫码添加联系人"), matchWrap())
+            contactsContainer.addView(subtle("联系人列表无法读取。可重建列表后重新扫码并核对校验码。"), matchWrap())
+            contactsContainer.addView(button("重建联系人列表") {
+                AlertDialog.Builder(this)
+                    .setTitle("重建联系人列表")
+                    .setMessage("这会清空全部联系人和加密会话，你的身份密钥保持不变。" +
+                        "旧会话中尚未解密的消息可能无法恢复；请重新扫码添加联系人并核对校验码。")
+                    .setPositiveButton("清空并重建") { _, _ ->
+                        try {
+                            KeyExchange.clearContactsAndSessions(this)
+                            refresh()
+                        } catch (failure: Exception) {
+                            statusView.text = "重建失败：${failure.message}"
+                        }
+                    }
+                    .setNegativeButton("取消", null)
+                    .show()
+            }, matchWrap())
             return
         }
-        if (pruned > 0) {
-            statusView.text = "已清理 $pruned 个无效联系人（低阶/损坏公钥）"
-        }
-        val contacts = KeyExchange.listContacts(this)
         if (contacts.isEmpty()) {
             contactsContainer.addView(subtle("（暂无）—— 从主页『扫码 / 导入二维码』添加对方身份码"), matchWrap())
             return
         }
         for (contact in contacts) {
-            val sas = runCatching { KeyExchange.shortAuthString(myIdentity, contact.publicKey) }
+            val sas = runCatching { myIdentity?.let { KeyExchange.shortAuthString(it, contact.publicKey) } ?: "—" }
                 .getOrDefault("—")  // belt-and-braces: shouldn't fire after pruneInvalidContacts
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
@@ -178,7 +198,11 @@ class KeyManagementActivity : Activity() {
                 LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
             row.addView(nameRow, matchWrap())
             row.addView(subtle("指纹：${contact.fingerprint}"), matchWrapWithTop(2))
-            row.addView(subtle("校验码：$sas — 双方设备应显示完全相同的 8 位数字"), matchWrapWithTop(2))
+            row.addView(subtle(if (myIdentity == null) "请先恢复身份，再核对安全码" else
+                "安全码：$sas\n请通过可信渠道逐组核对全部 16 组，不能只核对其中几组。").apply {
+                setTextIsSelectable(true)
+                typeface = android.graphics.Typeface.MONOSPACE
+            }, matchWrapWithTop(2))
             if (!contact.verified) {
                 row.addView(subtle("⚠ 未口外比对 SAS 前请勿用于敏感消息，可能存在中间人攻击").apply {
                     setTextColor(KeyboardUi.COLOR_DANGER)
@@ -189,6 +213,7 @@ class KeyManagementActivity : Activity() {
             actionsRow.addView(Button(this).apply {
                 text = if (contact.verified) "取消已验证" else "标记已验证"
                 isAllCaps = false
+                isEnabled = myIdentity != null && sas != "—"
                 setOnClickListener { showVerifyDialog(contact, sas) }
             }, weightWrap(1))
             actionsRow.addView(Button(this).apply {
@@ -233,14 +258,18 @@ class KeyManagementActivity : Activity() {
             AlertDialog.Builder(this)
                 .setTitle("确认「${contact.name}」的校验码")
                 .setMessage(
-                    "对方设备应该显示完全相同的 8 位数字：\n\n" +
+                        "对方设备应该显示完全相同的完整安全码（16 组）：\n\n" +
                         "    $sas\n\n" +
-                        "请通过电话、当面或其他可信渠道（不要通过同一个聊天 App）核对一致后点击确认。\n\n" +
-                        "数字不一致说明你扫到的不是对方本人的身份码 — 你们之间可能有中间人。"
+                        "请通过电话、当面或其他可信渠道逐组核对全部字符（不要通过同一个聊天 App，也不要只核对首尾几组）。双方需使用支持完整安全码的版本。\n\n" +
+                        "安全码不一致时，请勿标记已验证或发送敏感内容。旧版 8 位校验不再作为身份认证依据。"
                 )
-                .setPositiveButton("数字一致，标记已验证") { _, _ ->
-                    KeyExchange.setContactVerified(this, contact.fingerprint, true)
-                    refresh()
+                .setPositiveButton("全部一致，标记已验证") { _, _ ->
+                    try {
+                        KeyExchange.setContactVerified(this, contact.fingerprint, true, expectedSafetyCode = sas)
+                        refresh()
+                    } catch (e: Exception) {
+                        statusView.text = e.message ?: "验证失败，请重新核对安全码"
+                    }
                 }
                 .setNegativeButton("再确认一下", null)
                 .show()
@@ -268,11 +297,11 @@ class KeyManagementActivity : Activity() {
     private fun regenerateIdentity() {
         AlertDialog.Builder(this)
             .setTitle("重新生成身份？")
-            .setMessage("旧身份将立即作废：所有端到端加密会话(WTY5 棘轮)清空、联系人重置为未验证(需重新口外核对 SAS)，之前加你为联系人的对方需要重新扫码。此操作不可撤销。")
+            .setMessage("旧身份将立即作废：所有端到端加密会话清空、联系人重置为未验证（需重新核对完整安全码）。无法读取的联系人列表会被清空，之后需重新扫码。之前加你为联系人的对方需要重新扫码。此操作不可撤销。")
             .setPositiveButton("确认重置") { _, _ ->
                 scope.launch {
                     try {
-                        KeyExchange.replaceIdentity(this@KeyManagementActivity)
+                        KeyExchange.replaceIdentity(this@KeyManagementActivity, discardUnreadableContacts = true)
                         statusView.text = "已重新生成身份。请重新交换给联系人。"
                         refresh()
                     } catch (e: Exception) {
@@ -300,9 +329,12 @@ class KeyManagementActivity : Activity() {
                 if (newName.isEmpty()) {
                     statusView.text = "名字不能为空"; return@setPositiveButton
                 }
-                val renamed = contact.copy(name = newName)
-                KeyExchange.saveContact(this, renamed)  // saveContact dedupes by publicKey
-                refresh()
+                try {
+                    KeyExchange.renameContact(this, contact.publicKey, newName)
+                    refresh()
+                } catch (e: Exception) {
+                    statusView.text = e.message ?: "重命名失败"
+                }
             }
             .setNegativeButton("取消", null)
             .show()
@@ -387,7 +419,7 @@ class KeyManagementActivity : Activity() {
                 container.addView(toggleBtn, matchWrap())
                 val dialog = AlertDialog.Builder(this@KeyManagementActivity)
                     .setTitle("身份备份码")
-                    .setMessage("把这段抄写或截图保存到密码管理器。任何人拿到都能冒充你 — 不要发到网上、不要存云盘。\n\n说明：发给已验证联系人的加密文本和二维码会优先使用前向保密 (Double Ratchet)；但共享密钥和棘轮首条消息暂无 PFS，私钥泄漏可能导致这部分历史消息被解密。")
+                    .setMessage("把这段抄写或截图保存到密码管理器。任何人拿到都能冒充你 — 不要发到网上、不要存云盘。\n\n说明：发给已验证联系人的加密文本和二维码会优先使用前向保密 (Double Ratchet)；但共享密钥和收到对方首次回复前发出的全部棘轮消息暂无完整 PFS，私钥泄漏可能导致这部分历史消息被解密。")
                     .setView(container)
                     .setPositiveButton("复制到剪贴板") { _, _ ->
                         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
@@ -444,7 +476,7 @@ class KeyManagementActivity : Activity() {
         }
         val dialog = AlertDialog.Builder(this)
             .setTitle("从备份恢复身份")
-            .setMessage("这会覆盖当前设备的身份。请确认输入完整、无空格遗漏。")
+            .setMessage("这会覆盖当前设备的身份。身份改变时会清空旧会话并要求重新核对完整安全码；无法读取的联系人列表会被清空，之后需重新扫码。请确认输入完整。")
             .setView(container)
             .setPositiveButton("恢复", null)  // bound after show() so it doesn't auto-dismiss
             .setNegativeButton("取消", null)
@@ -455,7 +487,8 @@ class KeyManagementActivity : Activity() {
             try {
                 val identity = KeyExchange.restoreIdentityFromBackup(
                     this@KeyManagementActivity,
-                    input.text.toString()
+                    input.text.toString(),
+                    discardUnreadableContacts = true
                 )
                 statusView.text = "身份恢复成功 · ${identity.fingerprint}"
                 refresh()

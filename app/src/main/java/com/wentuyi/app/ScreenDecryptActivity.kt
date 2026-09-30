@@ -4,8 +4,6 @@ import android.app.Activity
 import android.content.Intent
 import android.media.projection.MediaProjectionManager
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
 import android.view.WindowManager
 
 /**
@@ -20,7 +18,7 @@ import android.view.WindowManager
 class ScreenDecryptActivity : Activity() {
 
     companion object {
-        const val ACTION_RESULT = "com.wentuyi.app.SCREEN_DECRYPT_RESULT"
+        const val EXTRA_REQUEST_ID = "screen_decrypt_request_id"
         const val EXTRA_OK = "ok"
         const val EXTRA_KIND = "kind"
         const val EXTRA_TEXT = "text"
@@ -32,19 +30,15 @@ class ScreenDecryptActivity : Activity() {
         private const val REQ_MEDIA_PROJECTION = 7141
     }
 
-    private val handler = Handler(Looper.getMainLooper())
+    private val requestId: String? get() = intent.getStringExtra(EXTRA_REQUEST_ID)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Palette.refresh(this)
         window.setBackgroundDrawableResource(android.R.color.transparent)
         window.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
-        requestScreenCapture()
-    }
-
-    override fun onDestroy() {
-        handler.removeCallbacksAndMessages(null)
-        super.onDestroy()
+        if (!ScreenDecryptStore.isActive(requestId)) { finish(); return }
+        if (savedInstanceState == null) requestScreenCapture()
     }
 
     @Suppress("DEPRECATION")
@@ -55,12 +49,14 @@ class ScreenDecryptActivity : Activity() {
             finishFailure("未授予屏幕截图权限")
             return
         }
-        // Give the system dialog/app-picker a short moment to disappear so the
-        // foreground service captures the chat screen, not the permission UI.
-        handler.postDelayed({
-            ScreenDecryptService.start(this, resultCode, data)
+        // The service delays capture itself. Hand off immediately so a configuration
+        // change cannot discard an already-granted one-shot projection token.
+        try {
+            requestId?.let { ScreenDecryptService.start(this, resultCode, data, it) }
             finish()
-        }, 150L)
+        } catch (e: Exception) {
+            finishFailure("无法启动屏幕解密：${e.userMessage()}")
+        }
     }
 
     private fun requestScreenCapture() {
@@ -78,11 +74,10 @@ class ScreenDecryptActivity : Activity() {
     }
 
     private fun finishFailure(message: String) {
-        val intent = Intent(ACTION_RESULT).setPackage(packageName)
+        val intent = Intent().putExtra(EXTRA_REQUEST_ID, requestId)
             .putExtra(EXTRA_OK, false)
             .putExtra(EXTRA_MESSAGE, message)
-        ScreenDecryptStore.save(this, intent)
-        sendBroadcast(intent)
+        ScreenDecryptStore.save(intent)
         finish()
     }
 

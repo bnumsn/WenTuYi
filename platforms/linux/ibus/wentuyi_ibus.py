@@ -22,12 +22,13 @@ def repo_root() -> Path:
 
 def default_cli_candidates() -> list[Path]:
     root = repo_root()
-    return [
-        Path(os.environ.get("WENTUYI_CLI", "")),
+    candidates = [
         root / "desktop-cli" / "build" / "install" / "desktop-cli" / "bin" / "desktop-cli",
         Path("/usr/local/lib/wentuyi/desktop-cli/bin/desktop-cli"),
         Path("/opt/wentuyi/desktop-cli/bin/desktop-cli"),
     ]
+    configured = os.environ.get("WENTUYI_CLI")
+    return [Path(configured), *candidates] if configured else candidates
 
 
 def find_cli() -> str:
@@ -35,7 +36,7 @@ def find_cli() -> str:
     if env:
         return env
     for candidate in default_cli_candidates():
-        if candidate and candidate.exists():
+        if candidate.is_file() and os.access(candidate, os.X_OK):
             return str(candidate)
     return "desktop-cli"
 
@@ -55,16 +56,19 @@ def run_cli(args: Iterable[str], passphrase: str = None, stdin_text: str = None)
     proc = subprocess.run(
         [find_cli(), *cli_args],
         check=False,
-        text=True,
-        input=stdin_text,
+        input=None if stdin_text is None else stdin_text.encode("utf-8"),
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
     if proc.returncode != 0:
-        detail = proc.stderr.strip() or proc.stdout.strip() or f"exit {proc.returncode}"
+        detail = proc.stderr.decode("utf-8").strip() or proc.stdout.decode("utf-8").strip() or f"exit {proc.returncode}"
         raise RuntimeError(detail)
-    return proc.stdout.strip()
+    output = proc.stdout.decode("utf-8")
+    # Decrypted stdout is exact plaintext, including leading/trailing whitespace and CRLF.
+    if cli_args and cli_args[0] in {"receive", "decrypt-text", "session-decrypt", "ratchet-decrypt"}:
+        return output
+    return output.strip()
 
 
 def debug_log(message: str) -> None:

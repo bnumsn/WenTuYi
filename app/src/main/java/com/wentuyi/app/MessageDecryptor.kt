@@ -3,6 +3,7 @@ package com.wentuyi.app
 import com.wentuyi.protocol.CryptoUtils
 
 import com.wentuyi.protocol.SecurePayloadCodec
+import com.wentuyi.protocol.PayloadLimits
 
 import android.content.Context
 import java.security.GeneralSecurityException
@@ -47,7 +48,7 @@ object MessageDecryptor {
 
     /** Upper bound on accepted ciphertext length — guards against huge-paste DoS, which
      *  the WTY5 path would otherwise re-allocate once per contact during trial decrypt. */
-    private const val MAX_PAYLOAD_CHARS = 512 * 1024
+    private const val MAX_PAYLOAD_CHARS = PayloadLimits.MAX_PAYLOAD_CHARS
 
     fun decrypt(context: Context, payload: String): Result {
         if (payload.length > MAX_PAYLOAD_CHARS) {
@@ -87,7 +88,12 @@ object MessageDecryptor {
         // outright — only report the desync if nobody succeeds.
         var desynced: KeyExchange.Contact? = null
         for (contact in contacts) {
-            when (val attempt = RatchetSession.tryDecrypt(context, identity, contact, payload)) {
+            val attempt = try {
+                RatchetSession.tryDecrypt(context, identity, contact, payload)
+            } catch (e: IllegalStateException) {
+                return Result.Failure(Reason.OTHER, e.message ?: "加密会话保存失败")
+            }
+            when (attempt) {
                 is RatchetSession.Attempt.Ok ->
                     return Result.Success(
                         SecurePayloadCodec.textPayload(attempt.plaintext), contact)

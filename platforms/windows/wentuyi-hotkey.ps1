@@ -1,6 +1,7 @@
 param(
     [switch] $SelfTest,
     [string] $CliScript,
+    [string] $Peer = $env:WENTUYI_PEER,
     [string] $PassphraseFile = "$env:APPDATA\Wentuyi\passphrase.txt"
 )
 
@@ -18,12 +19,13 @@ public static class WentuyiHotkeyInputNative {
 "@
 if (-not $CliScript) { $CliScript = Join-Path $ScriptDir "wentuyi-cli.ps1" }
 
-function Get-WentuyiPassphrase {
+function Get-WentuyiPassphrase([switch] $AllowMissing) {
     if ($env:WENTUYI_PASSPHRASE) { return $env:WENTUYI_PASSPHRASE }
     if (Test-Path $PassphraseFile) {
-        $value = (Get-Content -LiteralPath $PassphraseFile -Raw).Trim()
+        $value = (Get-Content -LiteralPath $PassphraseFile -Raw -Encoding UTF8).Trim()
         if ($value) { return $value }
     }
+    if ($AllowMissing) { return $null }
     throw "Set WENTUYI_PASSPHRASE or create $PassphraseFile"
 }
 
@@ -40,7 +42,11 @@ function Invoke-WentuyiCli([string[]] $ArgsList, [string] $Passphrase = $null, [
             $output = & $CliScript @ArgsList
         }
         if ($LASTEXITCODE -ne 0) { throw "desktop-cli failed: $($output -join "`n")" }
-        return ($output -join "`n").Trim()
+        $result = $output -join "`n"
+        if ($ArgsList[0] -in @("receive", "decrypt-text", "session-decrypt", "ratchet-decrypt")) {
+            return $result
+        }
+        return $result.Trim()
     } finally {
         if ($null -eq $prev) { Remove-Item Env:\WENTUYI_PASSPHRASE -ErrorAction SilentlyContinue }
         else { $env:WENTUYI_PASSPHRASE = $prev }
@@ -66,12 +72,14 @@ function Send-CtrlKey([byte] $VirtualKey, [int] $DelayMs = 180) {
 
 function Convert-WentuyiText([string] $Mode, [string] $Text) {
     if (-not $Text) { throw "No selected or clipboard text" }
-    $passphrase = Get-WentuyiPassphrase
+    $passphrase = Get-WentuyiPassphrase -AllowMissing
     if ($Mode -eq "encrypt") {
-        return Invoke-WentuyiCli @("encrypt-text") -Passphrase $passphrase -StdinText $Text
+        $sendArgs = @("send")
+        if ($Peer) { $sendArgs += @("--peer", $Peer) }
+        return Invoke-WentuyiCli $sendArgs -Passphrase $passphrase -StdinText $Text
     }
     if ($Mode -eq "decrypt") {
-        return Invoke-WentuyiCli @("decrypt-text") -Passphrase $passphrase -StdinText $Text
+        return Invoke-WentuyiCli @("receive") -Passphrase $passphrase -StdinText $Text
     }
     throw "Unknown mode: $Mode"
 }
@@ -85,7 +93,7 @@ function Invoke-ClipboardTransform([string] $Mode) {
     if ($null -eq $text) { $text = "" }
     Write-HotkeyLog "clipboard-read mode=$Mode length=$($text.Length)"
     $result = Convert-WentuyiText $Mode $text
-    Write-HotkeyLog "transform-result mode=$Mode prefix=$($result.Substring(0, [Math]::Min(5, $result.Length)))"
+    Write-HotkeyLog "transform-result mode=$Mode length=$($result.Length)"
     Set-Clipboard -Value $result
     Start-Sleep -Milliseconds 80
     Send-CtrlKey 0x56 120
@@ -96,6 +104,7 @@ if ($SelfTest) {
     $old = $env:WENTUYI_PASSPHRASE
     try {
         $env:WENTUYI_PASSPHRASE = "hotkey-test"
+        $Peer = "" # Isolate the legacy smoke from the active contact preference.
         $payload = Convert-WentuyiText "encrypt" "windows hotkey"
         $plain = Convert-WentuyiText "decrypt" $payload
         if ($plain -ne "windows hotkey") { throw "unexpected plaintext: $plain" }

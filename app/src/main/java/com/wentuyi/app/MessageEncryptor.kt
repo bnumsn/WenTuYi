@@ -33,7 +33,8 @@ object MessageEncryptor {
                 noForwardSecrecy = false,
             )
 
-            is SendTarget.Contact -> {
+            is SendTarget.Contact -> synchronized(WentuyiSettings.cryptoStateLock) {
+                requireVerifiedContact(context, target)
                 val ratchet =
                     RatchetSession.encryptText(context, target.identity, target.contact, text)
                 if (ratchet != null) {
@@ -55,6 +56,17 @@ object MessageEncryptor {
             // Defensive: callers reject Unavailable before encrypting; never downgrade here.
             is SendTarget.Unavailable -> throw IllegalStateException(target.reason)
         }
+
+    private fun requireVerifiedContact(context: Context, target: SendTarget.Contact) {
+        val current = KeyExchange.listContacts(context)
+            .firstOrNull { it.publicKey.contentEquals(target.contact.publicKey) }
+            ?: throw IllegalStateException("所选联系人已不存在，请重新选择目标")
+        check(current.verified) { "联系人 ${current.name} 未验证；请先核对 SAS 后再发送" }
+        val identity = KeyExchange.loadIdentity(context)
+        check(identity != null && identity.publicKey.contentEquals(target.identity.publicKey)) {
+            "身份已变化，请重新选择加密目标"
+        }
+    }
 
     /**
      * The targets the user can pick from right now: the shared key (when configured) plus

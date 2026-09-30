@@ -58,7 +58,7 @@ class SharedProtocolTest {
         val payload = SecurePayloadCodec.encryptTextToPayload("hi", "k")
         assertTrue(payload.startsWith(SecurePayloadCodec.PREFIX_V4))
         val packed = Encoding.b64Decode(payload.substring(SecurePayloadCodec.PREFIX_V4.length))
-        // memKb header field (offset 3..6) → 0xFFFFFFFF, far above the 256 MiB clamp.
+        // memKb header field (offset 3..6) → 0xFFFFFFFF, far above the 64 MiB clamp.
         // Must fail fast (clamp), never attempt a multi-GiB Argon2 allocation.
         packed[3] = 0xFF.toByte(); packed[4] = 0xFF.toByte()
         packed[5] = 0xFF.toByte(); packed[6] = 0xFF.toByte()

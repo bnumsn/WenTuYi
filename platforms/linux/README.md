@@ -22,7 +22,7 @@ chmod 600 ~/.config/wentuyi/passphrase
 ibus restart
 ```
 
-密钥与明文不经子进程命令行：桥接把口令通过 `WENTUYI_PASSPHRASE` 环境变量传给 `desktop-cli`、明文经 stdin（`--stdin`），避免出现在 world-readable 的 `/proc/<pid>/cmdline` / `ps`。`--passphrase` 仅作显式回退。
+密钥与明文不经子进程命令行：桥接把口令通过 `WENTUYI_PASSPHRASE` 环境变量传给 `desktop-cli`、明文经 stdin（`--stdin`），解密结果也通过 stdin 交给 `xdotool type --file -`，避免出现在 world-readable 的 `/proc/<pid>/cmdline` / `ps`。`--passphrase` 仅作显式回退。
 
 Add `Wentuyi` from the IBus input method preferences.
 
@@ -30,9 +30,44 @@ Add `Wentuyi` from the IBus input method preferences.
 
 - Type printable ASCII to build the preedit buffer.
 - `Enter`: commit the preedit buffer as plain text.
-- `Ctrl+Shift+E`: encrypt the preedit buffer and commit the `WTY4:` payload.
-- `Ctrl+Shift+D`: decrypt a `WTY4:` preedit buffer and commit plaintext.
+- `Ctrl+Shift+E`: encrypt the preedit buffer with profile `send` and commit the payload.
+- `Ctrl+Shift+D`: auto-detect the preedit payload with profile `receive` and commit plaintext.
 - `Esc`: clear preedit.
+
+## Contacts and message text
+
+The bridges use `WENTUYI_HOME` (default `~/.config/wentuyi`) and select a contact through
+`WENTUYI_PEER` or `--peer NAME` on the shell scripts. Add it using
+`desktop-cli peer-add --name bob --peer-qr 'WTYID1...'`, compare every group of the full
+256-bit code over a trusted channel, then run
+`desktop-cli peer-verify --peer bob --code 'FULL CODE'`. Existing contacts require this
+verification again after upgrading; an old 8-digit code is rejected. Sending to an unverified
+contact is blocked. Changing either identity invalidates verification. Verified contacts
+use WTY5 after a sending chain is established; before that the responder can send WTY4
+session encryption. Without a contact, the shared-passphrase path remains available.
+
+Pass `-` as the text value to keep plaintext off the shell script's own command line:
+
+```bash
+printf '%s' "$message" | platforms/linux/wentuyi-insert.sh --encrypt-text -
+printf '%s' "$payload" | platforms/linux/wentuyi-insert.sh --decrypt-text -
+```
+
+The stdin paths preserve boundary spaces, tabs, CRLF, and final newlines. CLI decryption
+outputs exact plaintext without an added newline. Direct insertion requires an `xdotool`
+version with `type --file -` support.
+
+## Bridge regressions
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 platforms/linux/test-insert.py
+PYTHONDONTWRITEBYTECODE=1 WENTUYI_TEST_CLI="$PWD/desktop-cli/build/install/desktop-cli/bin/desktop-cli" \
+  python3 -m unittest discover -s platforms/linux/ibus -p 'test_*.py'
+```
+
+The shell test runs the actual wrappers with a recording xdotool and checks its
+`/proc/self/cmdline` and stdin. The IBus test also runs a real JVM round trip when
+`WENTUYI_TEST_CLI` is set. Neither requires a desktop session.
 
 ## Smoke test
 

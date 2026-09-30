@@ -11,10 +11,13 @@ import java.util.zip.CRC32
 
 object KeyExchange {
     const val QR_PREFIX = "WTYID1"
+    /** Verification records from an earlier scheme must be confirmed again. */
+    const val AUTH_VERSION = 2
     private const val SHARED_SECRET_LEN = 32
+    private const val AUTH_BYTES = 32
     private const val BACKUP_PREFIX = "WTYB1"
     private val random = SecureRandom()
-    private val HKDF_INFO_SAS = "WTY-SAS-v1".toByteArray(StandardCharsets.US_ASCII)
+    private val HKDF_INFO_SAS = "WTY-SAS-v2".toByteArray(StandardCharsets.US_ASCII)
     private val HKDF_INFO_SESSION = "WTY-session-v1".toByteArray(StandardCharsets.US_ASCII)
 
     class Identity(val publicKey: ByteArray, val privateKey: ByteArray) {
@@ -72,7 +75,17 @@ object KeyExchange {
         }
     }
 
+    /**
+     * The full 256-bit verification code, grouped for comparison over a trusted channel.
+     *
+     * The function name is retained for source compatibility. The previous eight-digit
+     * code was too short for an exchange without a commitment handshake: an intermediary
+     * could search for two replacement identities with the same code. Every group of this
+     * code must be compared, and only [AUTH_VERSION] verification records may be trusted.
+     * This derivation is separate from the unchanged WTY4/WTY5 session key derivations.
+     */
     fun shortAuthString(myIdentity: Identity, peerPublic: ByteArray): String {
+        require(myIdentity.publicKey.size == 32) { "identity public key must be 32 bytes" }
         val ecdh = ecdh(myIdentity.privateKey, peerPublic)
         try {
             val (low, high) = if (compareBytes(myIdentity.publicKey, peerPublic) <= 0)
@@ -81,12 +94,20 @@ object KeyExchange {
                 System.arraycopy(low, 0, this, 0, low.size)
                 System.arraycopy(high, 0, this, low.size, high.size)
             }
-            val derived = CryptoUtils.hkdfSha256(ecdh, salt, HKDF_INFO_SAS, 4)
-            val asInt = ((derived[0].toInt() and 0x7F) shl 24) or
-                ((derived[1].toInt() and 0xFF) shl 16) or
-                ((derived[2].toInt() and 0xFF) shl 8) or
-                (derived[3].toInt() and 0xFF)
-            return (asInt % 100_000_000).toString().padStart(8, '0')
+            val derived = CryptoUtils.hkdfSha256(ecdh, salt, HKDF_INFO_SAS, AUTH_BYTES)
+            try {
+                val hex = "0123456789ABCDEF"
+                return buildString(AUTH_BYTES * 2 + AUTH_BYTES / 2 - 1) {
+                    for (i in derived.indices) {
+                        if (i > 0 && i % 2 == 0) append(' ')
+                        val byte = derived[i].toInt() and 0xFF
+                        append(hex[byte ushr 4])
+                        append(hex[byte and 0x0F])
+                    }
+                }
+            } finally {
+                CryptoUtils.wipe(derived)
+            }
         } finally {
             CryptoUtils.wipe(ecdh)
         }

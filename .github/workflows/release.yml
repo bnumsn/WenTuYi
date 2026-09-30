@@ -16,8 +16,21 @@ permissions:
   contents: write
 
 jobs:
+  android-device-tests:
+    name: Android 设备发布门禁
+    uses: ./.github/workflows/android-device-tests.yml
+    with:
+      ref: ${{ github.event.inputs.tag || github.ref }}
+
+  windows-bridge-tests:
+    name: Windows 输入桥发布门禁
+    uses: ./.github/workflows/windows-bridge-tests.yml
+    with:
+      ref: ${{ github.event.inputs.tag || github.ref }}
+
   release:
     name: 构建并发布 APK
+    needs: [android-device-tests, windows-bridge-tests]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -28,18 +41,35 @@ jobs:
           distribution: temurin
           java-version: "17"
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
       - uses: gradle/actions/setup-gradle@v4
 
       # Gate the release on the same checks main runs, so a tag can never ship something
       # that would have failed CI.
       - name: 协议核心单测
         run: ./gradlew :shared-protocol:test
+      - name: 桌面并发与持久化回归
+        run: ./gradlew :desktop-cli:test :desktop-cli:installDist
       - name: CLI 端到端冒烟
         run: ./scripts/cli-smoke.sh
+      - name: IBus CLI 自动发现回归
+        run: PYTHONDONTWRITEBYTECODE=1 WENTUYI_TEST_CLI="$PWD/desktop-cli/build/install/desktop-cli/bin/desktop-cli" python3 -m unittest discover -s platforms/linux/ibus -p 'test_*.py' -v
+      - name: Linux 插入桥正文与进程参数回归
+        run: PYTHONDONTWRITEBYTECODE=1 python3 platforms/linux/test-insert.py -v
       - name: 主题守卫
         run: ./scripts/check-theming.sh
       - name: lint
         run: ./gradlew :app:lintDebug
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-regression-reports
+          path: |
+            shared-protocol/build/reports/tests/test
+            desktop-cli/build/reports/tests/test
+            app/build/reports/lint-results-debug.html
+          if-no-files-found: ignore
 
       # WENTUYI_KEYSTORE* secrets, when configured, sign with the project's own key.
       # Without them app/build.gradle.kts falls back to the debug key: still installable
@@ -94,4 +124,8 @@ jobs:
           fi
           printf '%s\n\n### 产物\n- `wentuyi-%s.apk` — Android release 构建（R8 压缩混淆）\n- `wentuyi-%s-debug.apk` — debug 构建（含键盘本地测试页）\n- `wentuyi-desktop-cli-%s.zip` — Windows/Linux 协议 CLI\n- `SHA256SUMS.txt`\n\n完整改动见 README 的版本修复记录。\n' \
             "$NOTE" "$TAG" "$TAG" "$TAG" > notes.md
-          gh release create "$TAG" dist/* --title "文图易 $TAG" --notes-file notes.md
+          if [ -f "docs/releases/$TAG.md" ]; then
+            printf '\n' >> notes.md
+            cat "docs/releases/$TAG.md" >> notes.md
+          fi
+          gh release create "$TAG" dist/* --verify-tag --latest --title "文图易 $TAG" --notes-file notes.md

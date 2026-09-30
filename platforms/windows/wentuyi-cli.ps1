@@ -93,5 +93,11 @@ if ($Cli.EndsWith(".bat", [System.StringComparison]::OrdinalIgnoreCase)) {
 } else {
     $result = Invoke-NativeUtf8 $Cli $CliArgs $PipedInput
 }
-if ($result) { Write-Output $result.TrimEnd([char]13, [char]10) }
+if ($result) {
+    if ($CliArgs[0] -in @("receive", "decrypt-text", "session-decrypt", "ratchet-decrypt")) {
+        Write-Output $result
+    } else {
+        Write-Output $result.TrimEnd([char]13, [char]10)
+    }
+}
 exit $LASTEXITCODE

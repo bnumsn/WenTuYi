@@ -111,7 +111,7 @@ class OnboardingActivity : Activity() {
             // First-run screens are not the place for X25519 / Double Ratchet / PFS. The
             // user needs to know what to do and what is at stake; the cryptography is
             // spelled out in 密钥管理 and the backup dialog, where it is actionable.
-            "身份码就是你的加密身份。生成后让对方扫一下，双方核对屏幕上那 8 位数字一致，就能开始只有你俩能看的通信。\n\n之后请务必在「我的身份码」里抄下备份码：换手机要靠它，丢了就找不回来。",
+            "身份码就是你的加密身份。交换身份码后，通过当面或电话等可信渠道逐组核对完整安全码（16 组），全部一致再标记已验证。不要只核对首尾几组。\n\n之后请务必在「我的身份码」里抄下备份码：换手机要靠它，丢了就找不回来。",
             "现在生成"
         ) { ensureIdentityGenerated() }
         step3ActionLabel = { stepActionLabel ->
@@ -271,7 +271,7 @@ class OnboardingActivity : Activity() {
                     "• 丢失 → 永久失联，所有联系人需重新扫码加你；\n" +
                     "• 泄漏 → 攻击者可冒充你发送消息、解密历史。\n\n" +
                     "请立即到「我的身份码 / 共享密钥 → 备份身份」抄写备份码，离线保管。\n\n" +
-                    "已验证联系人的加密文本和二维码会优先使用前向保密 (Double Ratchet)；共享密钥和棘轮首条消息暂无 PFS，私钥泄漏仍可能解密这部分历史。"
+                    "已验证联系人的加密文本和二维码会优先使用前向保密 (Double Ratchet)；共享密钥和收到对方首次回复前发出的全部棘轮消息暂无完整 PFS，私钥泄漏仍可能解密这部分历史。"
             )
             .setPositiveButton("现在去备份") { _, _ ->
                 startActivity(Intent(this, KeyManagementActivity::class.java))

@@ -1,0 +1,42 @@
+name: Windows bridge tests
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Commit or tag to test
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  bridges:
+    name: Windows ${{ matrix.shell }} bridge regression
+    runs-on: windows-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shell: [powershell, pwsh]
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build the real desktop CLI
+        shell: pwsh
+        run: ./gradlew.bat :desktop-cli:installDist
+      - name: Verify full ciphertext, contacts, UTF-8 and exact whitespace
+        env:
+          WENTUYI_HOME: ${{ runner.temp }}/wentuyi-profile-${{ matrix.shell }}
+        run: ./platforms/windows/test-local.ps1

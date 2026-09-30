@@ -8,7 +8,8 @@ Windows currently ships protocol tooling plus two desktop insertion experiments,
 - `wentuyi-insert.ps1`: direct Unicode insertion helper. It sends generated text to the current caret/selection with `SendInput`, without reading or writing the clipboard.
 - `wentuyi-hotkey.ps1`: global hotkey bridge for a logged-in desktop session.
 - `install-hotkey.ps1`: optional installer for passphrase config and logon startup task.
-- `test-local.ps1`: local protocol + hotkey self-test.
+- `test-local.ps1`: local protocol + UTF-8/whitespace round trips and hotkey self-test.
+- `test-bridges.ps1`: PowerShell 5.1/7 bridge regressions without a desktop or clipboard; checks full ciphertext, QR paths, contact routing, and exact plaintext.
 - `test-package.ps1`: zip-package smoke test for a machine that only has the CLI zip and these scripts.
 - `ui-smoke.ps1`: interactive desktop smoke test that starts the hotkey bridge, opens Notepad, encrypts selected text with `Ctrl+Alt+E`, then decrypts it with `Ctrl+Alt+D`.
 - `ui-rich-smoke.ps1`: RichTextBox smoke test for a logged-in desktop session. It verifies the same global hotkey path against a real WinForms rich text control and records formatting/debug evidence.
@@ -17,6 +18,16 @@ Windows currently ships protocol tooling plus two desktop insertion experiments,
 ## Runtime
 
 Use either a system Java 17+ runtime or place a portable JRE zip named `jre-windows.zip` next to these scripts. `test-package.ps1` and `install-hotkey.ps1` can unpack that zip and set `JAVA_HOME` for the CLI process.
+
+## Bridge regressions
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\test-bridges.ps1
+```
+
+These tests use recording substitutes for the CLI and insertion target. Run `test-local.ps1`
+with the packaged JVM CLI to also check real UTF-8 stdin/stdout, including Chinese, boundary
+spaces, and final newlines.
 
 ## Package smoke
 
@@ -71,10 +82,22 @@ $env:WENTUYI_PASSPHRASE = 'YOUR_KEY'
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\wentuyi-hotkey.ps1
 ```
 
-- `Ctrl+Alt+E`: copy current selection, encrypt it, paste the `WTY4:` payload.
-- `Ctrl+Alt+D`: copy current selection, decrypt it, paste plaintext.
+- `Ctrl+Alt+E`: copy current selection, encrypt it with profile `send`, and paste the payload.
+- `Ctrl+Alt+D`: copy current selection, auto-detect the protocol with profile `receive`, and paste plaintext.
 
 Do not use this bridge as the final rich text implementation. It depends on host Ctrl+C/Ctrl+V behavior and fails in real RichTextBox testing.
+
+Contacts use the profile under `WENTUYI_HOME` (default `~/.config/wentuyi`). Set
+`WENTUYI_PEER` or pass `-Peer bob` to the hotkey, direct insert, or send script. Add a contact
+with `desktop-cli peer-add --name bob --peer-qr WTYID1...`, compare the complete 256-bit
+code over a trusted channel, then run `desktop-cli peer-verify --peer bob --code 'FULL CODE'`.
+Existing contacts require this explicit verification after upgrading; the old 8-digit code
+cannot be used. Unverified contacts are blocked, and changing either identity invalidates
+verification. Verified contacts use WTY5 when a sending chain exists; the responder's first
+message can use WTY4 session encryption. No `-Peer` uses the shared passphrase.
+
+Decrypted text preserves all leading/trailing spaces, CRLF, and final newlines through the
+UTF-8 CLI wrapper. The CLI writes the exact plaintext without appending a newline.
 
 Optional startup registration:
 

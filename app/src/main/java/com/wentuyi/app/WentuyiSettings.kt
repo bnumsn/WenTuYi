@@ -8,6 +8,7 @@ import android.util.Base64
 import java.nio.charset.StandardCharsets
 import java.security.GeneralSecurityException
 import java.security.KeyStore
+import org.json.JSONArray
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -35,8 +36,14 @@ object WentuyiSettings {
 
     private const val ANDROID_KEYSTORE = "AndroidKeyStore"
     private const val KEYSTORE_ALIAS = "wentuyi_passphrase_key"
+    // This one-way migration anchor lives outside the editable preferences file. A
+    // preferences flag (even encrypted) could simply be removed alongside the contacts.
+    private const val CONTACTS_MIGRATED_ALIAS = "wentuyi_contacts_integrity_v1"
     private const val CIPHER_TRANSFORMATION = "AES/GCM/NoPadding"
     private const val GCM_TAG_BITS = 128
+
+    /** Identity/contact edits and ratchet transactions must not interleave. */
+    internal val cryptoStateLock = Any()
 
     // ─── Passphrase (legacy shared-key flow) ──────────────────────────────────
 
@@ -91,7 +98,7 @@ object WentuyiSettings {
         System.arraycopy(privateKey, 0, packed, 1 + publicKey.size, privateKey.size)
         val b64 = Base64.encodeToString(packed, Base64.NO_WRAP)
         try {
-            putKeystoreString(prefs(context), KEY_ENCRYPTED_IDENTITY, b64)
+            putKeystoreString(prefs(context), KEY_ENCRYPTED_IDENTITY, b64, synchronous = true)
         } catch (e: GeneralSecurityException) {
             throw IllegalStateException("身份密钥保存失败", e)
         }
@@ -106,11 +113,14 @@ object WentuyiSettings {
             throw IllegalStateException("身份密钥读取失败", e)
         }
         val packed = Base64.decode(b64, Base64.NO_WRAP)
-        if (packed.isEmpty()) return null
+        if (packed.isEmpty()) throw IllegalStateException("身份密钥数据损坏")
         val pubLen = packed[0].toInt() and 0xFF
-        if (1 + pubLen >= packed.size) throw IllegalStateException("身份密钥数据损坏")
+        if (pubLen != 32 || packed.size != 65) throw IllegalStateException("身份密钥数据损坏")
         val pub = packed.copyOfRange(1, 1 + pubLen)
         val priv = packed.copyOfRange(1 + pubLen, packed.size)
+        val derivedPub = org.bouncycastle.crypto.params.X25519PrivateKeyParameters(priv, 0)
+            .generatePublicKey().encoded
+        if (!derivedPub.contentEquals(pub)) throw IllegalStateException("身份公私钥不匹配")
         // Identity prefs also benefit from the KS1 → KS2 migration so we don't ship
         // legacy-prefix branches forever.
         if (encrypted.startsWith(LEGACY_ENCRYPTED_PREFIX)) {
@@ -124,7 +134,7 @@ object WentuyiSettings {
 
     /** Drops the encrypted-identity pref, used by the Keystore-corruption recovery path. */
     fun clearIdentity(context: Context) {
-        prefs(context).edit().remove(KEY_ENCRYPTED_IDENTITY).apply()
+        check(prefs(context).edit().remove(KEY_ENCRYPTED_IDENTITY).commit()) { "身份密钥删除失败" }
     }
 
     // ─── Contacts (peer X25519 public keys) ───────────────────────────────────
@@ -141,25 +151,39 @@ object WentuyiSettings {
      * Fails closed: an unreadable blob throws rather than degrading to "no contacts", so a
      * tampered or truncated list can never be silently replaced by an attacker-supplied one.
      */
-    fun getContactsJson(context: Context): String {
+    fun getContactsJson(context: Context): String = synchronized(cryptoStateLock) {
         val prefs = prefs(context)
         val stored = prefs.getString(KEY_CONTACTS_JSON, null) ?: return "[]"
-        if (!stored.startsWith(ENCRYPTED_PREFIX) && !stored.startsWith(LEGACY_ENCRYPTED_PREFIX)) {
-            // Pre-v0.6.1 plaintext list. Adopt it once, then re-store it wrapped. Best-effort:
-            // a Keystore failure here must not lock the user out of their own contacts.
-            runCatching { putKeystoreString(prefs, KEY_CONTACTS_JSON, stored) }
-            return stored
-        }
         return try {
-            decryptKeystoreString(stored)
+            if (!stored.startsWith(ENCRYPTED_PREFIX) && !stored.startsWith(LEGACY_ENCRYPTED_PREFIX)) {
+                val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+                if (keyStore.containsAlias(CONTACTS_MIGRATED_ALIAS)) {
+                    throw GeneralSecurityException("不允许将联系人列表降级为明文")
+                }
+                // A legacy list has no proof of origin. Keep names/keys for compatibility,
+                // but never import its asserted verification. The user must compare SAS
+                // again. Anchor BEFORE writing/returning: a crash fails closed, never
+                // reopens the plaintext-import path.
+                val contacts = JSONArray(stored)
+                for (i in 0 until contacts.length()) contacts.getJSONObject(i).remove("verified")
+                val migrated = contacts.toString()
+                getOrCreateSecretKey(CONTACTS_MIGRATED_ALIAS)
+                putKeystoreString(prefs, KEY_CONTACTS_JSON, migrated, synchronous = true)
+                migrated
+            } else {
+                val plain = decryptKeystoreString(stored)
+                getOrCreateSecretKey(CONTACTS_MIGRATED_ALIAS)
+                plain
+            }
         } catch (e: Exception) {
-            throw IllegalStateException("联系人列表读取失败（可能已被篡改），请重新扫码添加联系人", e)
+            throw IllegalStateException("联系人列表读取失败（可能已被篡改），请到密钥管理重建列表并重新扫码", e)
         }
     }
 
-    fun setContactsJson(context: Context, json: String) {
+    fun setContactsJson(context: Context, json: String): Unit = synchronized(cryptoStateLock) {
         try {
-            putKeystoreString(prefs(context), KEY_CONTACTS_JSON, json)
+            getOrCreateSecretKey(CONTACTS_MIGRATED_ALIAS)
+            putKeystoreString(prefs(context), KEY_CONTACTS_JSON, json, synchronous = true)
         } catch (e: GeneralSecurityException) {
             throw IllegalStateException("联系人列表保存失败", e)
         }
@@ -191,7 +215,7 @@ object WentuyiSettings {
     }
 
     fun clearRatchet(context: Context, fingerprint: String) {
-        prefs(context).edit().remove(ratchetKey(fingerprint)).apply()
+        check(prefs(context).edit().remove(ratchetKey(fingerprint)).commit()) { "棘轮状态删除失败" }
     }
 
     /**
@@ -205,7 +229,7 @@ object WentuyiSettings {
         for (key in prefs.all.keys) {
             if (key.startsWith("ratchet_")) editor.remove(key)
         }
-        editor.apply()
+        check(editor.commit()) { "棘轮状态删除失败" }
     }
 
     /**
@@ -288,13 +312,13 @@ object WentuyiSettings {
     }
 
     @Throws(GeneralSecurityException::class)
-    private fun getOrCreateSecretKey(): SecretKey {
+    private fun getOrCreateSecretKey(alias: String = KEYSTORE_ALIAS): SecretKey = synchronized(cryptoStateLock) {
         val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-        (keyStore.getKey(KEYSTORE_ALIAS, null) as? SecretKey)?.let { return it }
+        (keyStore.getKey(alias, null) as? SecretKey)?.let { return it }
 
         val keyGen = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
         val spec = KeyGenParameterSpec.Builder(
-            KEYSTORE_ALIAS,
+            alias,
             KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
         )
             .setBlockModes(KeyProperties.BLOCK_MODE_GCM)

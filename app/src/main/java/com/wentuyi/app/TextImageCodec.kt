@@ -57,7 +57,7 @@ object TextImageCodec {
      * below the integer-overflow-class attacks a hostile sender could trigger by
      * advertising total = Int.MAX_VALUE.
      */
-    private const val MAX_QR_PAGES = 32
+    internal const val MAX_QR_PAGES = 32
 
     // ─── Multi-QR chunking wrapper ────────────────────────────────────────────
     const val MULTI_PREFIX = "WTYP1"
@@ -132,6 +132,17 @@ object TextImageCodec {
     fun renderEncryptedPayloadAsQr(payload: String): List<Bitmap> =
         renderPayloadAsQr(payload, "文图易加密文字", "扫码导入文图易解密")
 
+    /** Renders at most one full-size QR at a time; the callback must not retain it. */
+    fun forEachEncryptedPayloadQr(payload: String, consume: (Bitmap, Int, Int) -> Unit) {
+        val chunks = chunkPayload(payload)
+        chunks.forEachIndexed { index, chunk ->
+            val title = if (chunks.size == 1) "文图易加密文字" else "文图易加密文字 ${index + 1}/${chunks.size}"
+            val bitmap = encodeQrBitmapValidated(chunk, title, "扫码导入文图易解密",
+                if (chunks.size == 1) payloadLabel(payload) else "WTYP1")
+            try { consume(bitmap, index, chunks.size) } finally { bitmap.recycle() }
+        }
+    }
+
     /**
      * Outer retry harness: if any chunk in the rendered set fails the per-bitmap
      * self-decode check, throw out of [renderPayloadAsQr] and rerun [block], which
@@ -154,35 +165,34 @@ object TextImageCodec {
         if (chunks.size == 1) {
             return listOf(encodeQrBitmapValidated(chunks[0], title, footer, payloadLabel(payload)))
         }
-        return chunks.mapIndexed { i, chunk ->
-            val pageLabel = "${i + 1}/${chunks.size}"
-            encodeQrBitmapValidated(chunk, "$title $pageLabel", footer, "WTYP1")
+        val rendered = ArrayList<Bitmap>()
+        try {
+            chunks.forEachIndexed { i, chunk ->
+                val pageLabel = "${i + 1}/${chunks.size}"
+                rendered += encodeQrBitmapValidated(chunk, "$title $pageLabel", footer, "WTYP1")
+            }
+            return rendered
+        } catch (e: Throwable) {
+            rendered.forEach { it.recycle() }
+            throw e
         }
     }
 
     /**
      * Wraps [encodeQrBitmap] with an "encode → decode → bail if mismatch" self-check.
-     * ZXing's own decoder occasionally fails on QRs we just rendered — possibly a
-     * specific module pattern that triggers a finder-pattern false negative. The
-     * QR content itself is unchanged (chunk-id is payload-derived so retries would
-     * give the same content); the failure is purely in rendering. Since we can't
-     * predict which content triggers it, we render then immediately verify, and if
-     * verification fails we retry by perturbing the panel dimensions slightly — a
-     * different bitmap geometry shifts the QR module-to-pixel alignment enough to
-     * dodge the bad case. Hard cap of 3 attempts; the third just returns whatever
-     * we got, so the receiver may have to ask the sender to resend.
+     * Compare the fully decoded content before exposing any bitmap. Dense QR data can
+     * contain false finder patterns; [readQrText] uses the multi-reader fallback to scan
+     * every candidate rather than accepting the single-reader's early selection.
+     * Geometry variants remain available for legacy layouts. Every discarded bitmap
+     * is recycled, and six failed validations abort generation.
      */
     private fun encodeQrBitmapValidated(content: String, title: String, footer: String, meta: String): Bitmap {
-        // Bumped to 6 paddingShift attempts (was 3). Identity QRs can't fall back
-        // to "re-encrypt with new random IV" the way encrypted payloads can — same
-        // public key always renders to the same QR matrix — so paddingShift is the
-        // only knob. 6 different geometries gives enough variation to dodge the
-        // residual ZXing-unreadable cases observed in 100-run testing.
         repeat(6) { attempt ->
             val bm = encodeQrBitmap(content, title, footer, meta, attempt)
             try {
                 if (readQrText(bm) == content) return bm
             } catch (e: Exception) { /* retry with shifted padding */ }
+            bm.recycle()
         }
         throw IllegalStateException("生成的二维码自解码失败 (content length=${content.length})")
     }
@@ -245,33 +255,49 @@ object TextImageCodec {
      *      smeared individual modules; downscaling averages the noise out)
      *
      * Earlier smoke testing showed the 2-binarizer fallback was insufficient for
-     * Samsung's aggressive JPEG q=70 output — the third attempt cuts failure
-     * rate from ~20% to <1%.
+     * Samsung's aggressive JPEG q=70 output — downscaling can recover smeared modules.
+     * If all three single-reader attempts fail, try the same sources with the
+     * multi-reader and require exactly one distinct decoded text.
      */
     fun readQrText(bitmap: Bitmap): String {
         val hints = mapOf<DecodeHintType, Any>(
             DecodeHintType.TRY_HARDER to true,
             DecodeHintType.CHARACTER_SET to "UTF-8",
         )
-        val attempts: List<() -> com.google.zxing.Binarizer> = listOf(
-            { HybridBinarizer(bitmapToLuminanceSource(bitmap)) },
-            { GlobalHistogramBinarizer(bitmapToLuminanceSource(bitmap)) },
-            { HybridBinarizer(bitmapToLuminanceSource(downscale(bitmap))) },
-        )
-        // Two full sweeps through the binarizer attempts: ZXing's TRY_HARDER path
-        // exhibits ~5% non-deterministic failures on identical inputs (verified by
-        // QrDeterminismTest), so a second pass roughly squares the residual fail
-        // rate to ~0.25%. Six 0.25% chunks compound to ~98.5% multi-QR success.
-        for (pass in 0..1) {
-            for (attemptFactory in attempts) {
-                try {
-                    return QRCodeReader().decode(BinaryBitmap(attemptFactory()), hints).text
-                } catch (e: ReaderException) {
-                    // try next attempt
-                }
+        val source = bitmapToLuminanceSource(bitmap)
+        var half: Bitmap? = null
+        try {
+            val reducedSource by lazy {
+                downscale(bitmap).also { half = it }.let(::bitmapToLuminanceSource)
             }
-        }
-        throw IllegalArgumentException("没有识别到二维码")
+            val attempts = listOf(
+                lazy { BinaryBitmap(HybridBinarizer(source)) },
+                lazy { BinaryBitmap(GlobalHistogramBinarizer(source)) },
+                lazy { BinaryBitmap(HybridBinarizer(reducedSource)) },
+            )
+            for (attempt in attempts) {
+                try {
+                    return QRCodeReader().decode(attempt.value, hints).text
+                } catch (e: ReaderException) { /* try the next binarizer */ }
+            }
+            // A valid dense QR can contain a data pattern indistinguishable from a
+            // finder. The single-reader can stop after confirming that false third
+            // center, before visiting the real bottom-left finder. The multi-reader
+            // scans all candidate triangles and lets the QR decoder validate each.
+            for (attempt in attempts) {
+                try {
+                    readUniqueQrCandidate(attempt.value, hints)?.let { return it }
+                } catch (e: ReaderException) { /* try the next binarizer */ }
+            }
+            throw IllegalArgumentException("没有识别到二维码")
+        } finally { half?.takeUnless { it === bitmap }?.recycle() }
+    }
+
+    /** A single imported page must never silently choose among distinct QR messages. */
+    internal fun readUniqueQrCandidate(binary: BinaryBitmap, hints: Map<DecodeHintType, Any>): String? {
+        val texts = QRCodeMultiReader().decodeMultiple(binary, hints).map { it.text }.distinct()
+        require(texts.size <= 1) { "图片中识别到多条不同二维码，请分别选择图片" }
+        return texts.singleOrNull()
     }
 
     /**
@@ -285,36 +311,42 @@ object TextImageCodec {
             DecodeHintType.CHARACTER_SET to "UTF-8",
             DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE),
         )
-        val half by lazy { downscale(bitmap) }
+        val source = bitmapToLuminanceSource(bitmap)
+        var half: Bitmap? = null
+        val reducedSource by lazy {
+            downscale(bitmap).also { half = it }.let(::bitmapToLuminanceSource)
+        }
         val attempts: List<Pair<Float, () -> com.google.zxing.Binarizer>> = listOf(
-            1f to { HybridBinarizer(bitmapToLuminanceSource(bitmap)) },
-            1f to { GlobalHistogramBinarizer(bitmapToLuminanceSource(bitmap)) },
-            2f to { HybridBinarizer(bitmapToLuminanceSource(half)) },
+            1f to { HybridBinarizer(source) },
+            1f to { GlobalHistogramBinarizer(source) },
+            2f to { HybridBinarizer(reducedSource) },
         )
         val scans = LinkedHashMap<String, QrScan>()
-        for ((scale, attemptFactory) in attempts) {
-            val binary = BinaryBitmap(attemptFactory())
-            val results = try {
-                QRCodeMultiReader().decodeMultiple(binary, hints).toList()
-            } catch (e: ReaderException) {
-                try {
-                    listOf(QRCodeReader().decode(binary, hints))
-                } catch (e2: ReaderException) {
-                    emptyList()
+        try {
+            for ((scale, attemptFactory) in attempts) {
+                val binary = BinaryBitmap(attemptFactory())
+                val results = try {
+                    QRCodeMultiReader().decodeMultiple(binary, hints).toList()
+                } catch (e: ReaderException) {
+                    try {
+                        listOf(QRCodeReader().decode(binary, hints))
+                    } catch (e2: ReaderException) {
+                        emptyList()
+                    }
+                }
+                for (result in results) {
+                    val scan = result.toQrScan(scale, bitmap.width, bitmap.height)
+                    val existing = scans[scan.text]
+                    if (existing == null || scan.centerY > existing.centerY) scans[scan.text] = scan
                 }
             }
-            for (result in results) {
-                val scan = result.toQrScan(scale, bitmap.width, bitmap.height)
-                val existing = scans[scan.text]
-                if (existing == null || scan.centerY > existing.centerY) scans[scan.text] = scan
-            }
-        }
-        return scans.values.toList()
+            return scans.values.toList()
+        } finally { half?.takeUnless { it === bitmap }?.recycle() }
     }
 
     /** Returns a half-size copy of [bitmap]; cheap and helps ZXing when modules are noisy. */
     private fun downscale(bitmap: Bitmap): Bitmap =
-        Bitmap.createScaledBitmap(bitmap, bitmap.width / 2, bitmap.height / 2, true)
+        Bitmap.createScaledBitmap(bitmap, maxOf(1, bitmap.width / 2), maxOf(1, bitmap.height / 2), true)
 
     private fun Result.toQrScan(scale: Float, fallbackW: Int, fallbackH: Int): QrScan {
         val points = resultPoints ?: emptyArray()
@@ -339,11 +371,13 @@ object TextImageCodec {
             bitmap.config == Bitmap.Config.HARDWARE) {
             bitmap.copy(Bitmap.Config.ARGB_8888, false)
         } else bitmap
-        val w = readable.width
-        val h = readable.height
-        val pixels = IntArray(w * h)
-        readable.getPixels(pixels, 0, w, 0, 0, w, h)
-        return RGBLuminanceSource(w, h, pixels)
+        try {
+            val w = readable.width
+            val h = readable.height
+            val pixels = IntArray(w * h)
+            readable.getPixels(pixels, 0, w, 0, 0, w, h)
+            return RGBLuminanceSource(w, h, pixels)
+        } finally { if (readable !== bitmap) readable.recycle() }
     }
 
     /**
@@ -452,7 +486,7 @@ object TextImageCodec {
         val width = mw + padHorizontal * 2
         val height = padTop + mh + padBottom
 
-        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.RGB_565)
         val canvas = Canvas(bitmap)
         canvas.drawColor(Color.WHITE)
 
@@ -504,6 +538,7 @@ object TextImageCodec {
     }
 
     private fun payloadLabel(payload: String): String = when {
+        payload.startsWith(DoubleRatchet.PREFIX_V5) -> "WTY5"
         payload.startsWith(SecurePayloadCodec.PREFIX_V4) -> "WTY4"
         payload.startsWith(SecurePayloadCodec.PREFIX_V3) -> "WTY3"
         payload.startsWith(SecurePayloadCodec.PREFIX_V2) -> "WTY2"
@@ -530,6 +565,7 @@ object TextImageCodec {
             minHeight,
             Math.round(textTop - metrics.ascent + lines.size * lineHeight + bottomPadding)
         )
+        require(height <= 8192) { "文字过长，请缩短后生成图片" }
         val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
         canvas.drawColor(Color.rgb(250, 251, 247))
@@ -573,7 +609,8 @@ object TextImageCodec {
         val lineHeight = Math.round(metrics.descent - metrics.ascent + 22)
         // Cap height like the encrypt path caps inputs — a hostile/huge paste can't blow up memory.
         val rawHeight = Math.round(ANTIOCR_PADDING * 2 - metrics.ascent + lines.size * lineHeight)
-        val height = rawHeight.coerceIn(180, 8192)
+        require(rawHeight <= 8192) { "文字过长，请缩短后生成图片" }
+        val height = maxOf(180, rawHeight)
         val bitmap = Bitmap.createBitmap(ANTIOCR_WIDTH, height, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
         canvas.drawColor(Color.rgb(247, 247, 247))

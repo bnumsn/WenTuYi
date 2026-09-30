@@ -4,6 +4,7 @@ import com.wentuyi.protocol.CryptoUtils
 import com.wentuyi.protocol.DoubleRatchet
 import com.wentuyi.protocol.Encoding
 import com.wentuyi.protocol.KeyExchange
+import com.wentuyi.protocol.PayloadLimits
 import com.wentuyi.protocol.SecurePayloadCodec
 
 /**
@@ -26,7 +27,11 @@ import com.wentuyi.protocol.SecurePayloadCodec
  */
 object ProfileCommands {
 
-    fun send(profile: Profile, peerName: String?, text: String) {
+    fun send(profile: Profile, peerName: String?, text: String) = profile.transaction {
+        sendLocked(profile, peerName, text)
+    }
+
+    private fun sendLocked(profile: Profile, peerName: String?, text: String) {
         require(text.isNotEmpty()) { "nothing to send" }
         if (peerName == null) {
             val passphrase = profile.passphrase()
@@ -36,6 +41,7 @@ object ProfileCommands {
             return
         }
 
+        profile.requirePeerVerified(peerName)
         val identity = profile.loadIdentity()
         val peer = profile.peerPublicKey(peerName)
 
@@ -50,8 +56,10 @@ object ProfileCommands {
         }
 
         if (state?.cks != null) {
-            println(DoubleRatchet.encrypt(state, text.toByteArray(Charsets.UTF_8)))
+            val payload = DoubleRatchet.encrypt(state,
+                PayloadLimits.utf8Bytes(text, DoubleRatchet.MAX_PLAINTEXT_BYTES))
             profile.saveRatchet(peerName, state)
+            println(payload)
             return
         }
 
@@ -68,7 +76,11 @@ object ProfileCommands {
         }
     }
 
-    fun receive(profile: Profile, payload: String) {
+    fun receive(profile: Profile, payload: String) = profile.transaction {
+        receiveLocked(profile, payload)
+    }
+
+    private fun receiveLocked(profile: Profile, payload: String) {
         if (payload.startsWith(DoubleRatchet.PREFIX_V5)) {
             receiveRatchet(profile, payload)
             return
@@ -84,12 +96,12 @@ object ProfileCommands {
             ?: throw IllegalStateException(
                 "this is a shared-key payload but no passphrase is configured " +
                     "(set WENTUYI_PASSPHRASE, or run: desktop-cli set-passphrase)")
-        println(SecurePayloadCodec.decryptPayload(payload, passphrase))
+        print(SecurePayloadCodec.decryptPayload(payload, passphrase))
     }
 
     private fun receiveRatchet(profile: Profile, payload: String) {
-        val peers = profile.peerNames()
-        if (peers.isEmpty()) throw IllegalStateException("ratchet message but no peers configured")
+        val peers = profile.peerNames().filter(profile::isPeerVerified)
+        if (peers.isEmpty()) throw IllegalStateException("ratchet message but no verified peers configured")
         val identity = profile.loadIdentity()
         val headerEpoch = DoubleRatchet.peekEpoch(payload)
             ?: throw IllegalArgumentException("malformed WTY5 payload")
@@ -140,8 +152,8 @@ object ProfileCommands {
     }
 
     private fun receiveSessionKey(profile: Profile, payload: String) {
-        val peers = profile.peerNames()
-        if (peers.isEmpty()) throw IllegalStateException("session-key message but no peers configured")
+        val peers = profile.peerNames().filter(profile::isPeerVerified)
+        if (peers.isEmpty()) throw IllegalStateException("session-key message but no verified peers configured")
         val identity = profile.loadIdentity()
         for (name in peers) {
             val peer = runCatching { profile.peerPublicKey(name) }.getOrNull() ?: continue
@@ -165,12 +177,12 @@ object ProfileCommands {
     /** Plaintext on stdout, provenance on stderr — so pipelines get only the message. */
     private fun emit(peerName: String, plain: ByteArray) {
         System.err.println("from: $peerName")
-        println(String(plain, Charsets.UTF_8))
+        print(String(plain, Charsets.UTF_8))
     }
 
     // ─── Profile management ───────────────────────────────────────────────────
 
-    fun init(profile: Profile) {
+    fun init(profile: Profile) = profile.transaction {
         val identity = profile.createIdentity()
         println("home=${profile.home}")
         println("fingerprint=${identity.fingerprint}")
@@ -181,7 +193,7 @@ object ProfileCommands {
                 "(there is no Keystore on desktop) — it is written 0600; back it up offline.")
     }
 
-    fun whoami(profile: Profile) {
+    fun whoami(profile: Profile) = profile.transaction {
         val identity = profile.loadIdentity()
         println("home=${profile.home}")
         println("fingerprint=${identity.fingerprint}")
@@ -190,16 +202,18 @@ object ProfileCommands {
         println("passphrase=${if (profile.passphrase() != null) "set" else "not set"}")
     }
 
-    fun peerList(profile: Profile) {
+    fun peerList(profile: Profile) = profile.transaction {
         val identity = runCatching { profile.loadIdentity() }.getOrNull()
         for (name in profile.peerNames()) {
             val pub = runCatching { profile.peerPublicKey(name) }.getOrNull() ?: continue
             val sas = identity?.let {
                 runCatching { KeyExchange.shortAuthString(it, pub) }.getOrNull()
             } ?: "?"
-            val ratchet = profile.loadRatchet(name)
-            val session = if (ratchet == null) "none" else "epoch ${ratchet.epoch}"
-            println("$name\tsas=$sas\tratchet=$session")
+            val ratchet = runCatching { profile.loadRatchet(name) }
+            val session = if (ratchet.isFailure) "needs-reset"
+                else ratchet.getOrNull()?.let { "epoch ${it.epoch}" } ?: "none"
+            val status = if (profile.isPeerVerified(name)) "verified" else "unverified"
+            println("$name\tsas=$sas\tauth=$status\tratchet=$session")
         }
     }
 }

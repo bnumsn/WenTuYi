@@ -36,7 +36,8 @@ BBK=$(grep '^backup=' b.txt | cut -d= -f2-); BPUB=$(grep '^publicKey=' b.txt | c
 SAS_A=$(WENTUYI_BACKUP="$ABK" "$CLI" sas --peer-public "$BPUB")
 SAS_B=$(WENTUYI_BACKUP="$BBK" "$CLI" sas --peer-public "$APUB")
 check "SAS 双向一致" "$SAS_A" "$SAS_B"
-check "SAS 为 8 位" "8" "${#SAS_A}"
+SAS_COMPACT=${SAS_A// /}
+check "认证码为完整 256 bit" "64" "${#SAS_COMPACT}"
 
 echo "== WTY4 共享密钥 =="
 P=$(WENTUYI_PASSPHRASE="correct horse 文图易" "$CLI" encrypt-text "中文 payload — ünïcode")
@@ -99,6 +100,16 @@ BPUB2=$("${PB[@]}" init 2>/dev/null | grep '^publicKey=' | cut -d= -f2-)
 SAS_PA=$("${PA[@]}" peer-add --name bob --peer-public "$BPUB2" 2>/dev/null | grep '^sas=' | cut -d= -f2)
 SAS_PB=$("${PB[@]}" peer-add --name alice --peer-public "$APUB2" 2>/dev/null | grep '^sas=' | cut -d= -f2)
 check "profile SAS 双向一致" "$SAS_PA" "$SAS_PB"
+if "${PA[@]}" send --peer bob "未验证禁止发送" >/dev/null 2>&1; then
+  echo "  FAIL 未验证联系人允许发送"; exit 1
+fi
+pass=$((pass + 1)); echo "  ok   未验证联系人禁止发送"
+if "${PA[@]}" peer-verify --peer bob --code "12345678" >/dev/null 2>&1; then
+  echo "  FAIL 旧 8 位码允许验证"; exit 1
+fi
+pass=$((pass + 1)); echo "  ok   旧 8 位认证码被拒绝"
+"${PA[@]}" peer-verify --peer bob --code "$SAS_PA" >/dev/null
+"${PB[@]}" peer-verify --peer alice --code "$SAS_PB" >/dev/null
 
 M=$("${PA[@]}" send --peer bob "今晚八点老地方" 2>/dev/null)
 OUT=$("${PB[@]}" receive "$M" 2>/dev/null)
@@ -125,6 +136,13 @@ if "${PB[@]}" receive "$PSTALE" >/dev/null 2>&1; then
   echo "  FAIL profile: 已退休 epoch 的密文被重放进了活会话"; exit 1
 fi
 pass=$((pass + 1)); echo "  ok   profile 旧 epoch 重放被拒绝"
+
+# Byte comparison avoids shell command substitution discarding trailing newlines.
+printf ' \t中文\r\n第二行 \t\n\n' > plaintext.txt
+"${PA[@]}" send --peer bob --stdin < plaintext.txt > boundary.payload 2>/dev/null
+"${PB[@]}" receive --stdin < boundary.payload > boundary.plain 2>/dev/null
+cmp plaintext.txt boundary.plain
+pass=$((pass + 1)); echo "  ok   profile stdin 完整保留正文空白/中文/换行"
 
 # No --peer at all must still work through the legacy shared key.
 "${PA[@]}" set-passphrase "shared 文图易" >/dev/null 2>&1

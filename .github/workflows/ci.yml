@@ -25,21 +25,25 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: shared-protocol 单元测试
         run: ./gradlew :shared-protocol:test
-      - name: desktop-cli 构建
-        run: ./gradlew :desktop-cli:build
+      - name: desktop-cli 构建及并发/持久化回归
+        run: ./gradlew :desktop-cli:build :desktop-cli:installDist
       - name: CLI 端到端冒烟（WTY4 + WTY5 棘轮 + 失步恢复）
         run: ./scripts/cli-smoke.sh
+      - name: IBus CLI 自动发现回归
+        run: PYTHONDONTWRITEBYTECODE=1 WENTUYI_TEST_CLI="$PWD/desktop-cli/build/install/desktop-cli/bin/desktop-cli" python3 -m unittest discover -s platforms/linux/ibus -p 'test_*.py' -v
+      - name: Linux 插入桥正文与进程参数回归
+        run: PYTHONDONTWRITEBYTECODE=1 python3 platforms/linux/test-insert.py -v
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: protocol-test-report
-          path: shared-protocol/build/reports/tests/test
+          path: |
+            shared-protocol/build/reports/tests/test
+            desktop-cli/build/reports/tests/test
           if-no-files-found: ignore
 
   android:
-    # No emulator here: connectedDebugAndroidTest needs a device and is run manually
-    # (see README). This job guarantees the app and its instrumentation suite still
-    # *compile*, which is what silently rots when the protocol layer changes.
+    # Keep compile/lint independent so device startup failures don't hide these results.
     name: Android (编译 + lint)
     runs-on: ubuntu-latest
     steps:
@@ -49,6 +53,8 @@ jobs:
           distribution: temurin
           java-version: "17"
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
       - uses: gradle/actions/setup-gradle@v4
       - name: assembleDebug
         run: ./gradlew :app:assembleDebug
@@ -64,3 +70,11 @@ jobs:
           name: android-lint-report
           path: app/build/reports/lint-results-debug.html
           if-no-files-found: ignore
+
+  android-device-tests:
+    name: Android 设备回归
+    uses: ./.github/workflows/android-device-tests.yml
+
+  windows-bridge-tests:
+    name: Windows 输入桥回归
+    uses: ./.github/workflows/windows-bridge-tests.yml

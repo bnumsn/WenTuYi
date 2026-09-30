@@ -1,7 +1,8 @@
 package com.wentuyi.app
 
 import android.content.Context
-import java.nio.charset.StandardCharsets
+import com.wentuyi.protocol.PayloadLimits
+import com.wentuyi.protocol.DoubleRatchet as ProtocolDoubleRatchet
 
 /**
  * Glue between [DoubleRatchet], per-contact persistence ([WentuyiSettings]) and the
@@ -43,7 +44,7 @@ object RatchetSession {
      * (AES-GCM nonce reuse). A single lock is enough — sends/receives are human-paced, so
      * contention is negligible; per-fingerprint locking would only add complexity.
      */
-    private val lock = Any()
+    private val lock get() = WentuyiSettings.cryptoStateLock
 
     /** Outcome of trial-decrypting one WTY5 payload as if it came from one contact. */
     sealed class Attempt {
@@ -67,9 +68,11 @@ object RatchetSession {
         contact: KeyExchange.Contact,
         text: String,
     ): String? = synchronized(lock) {
+        requireCurrentTarget(context, identity, contact, requireVerified = true)
         val state = loadOrBootstrapForSend(context, identity, contact) ?: return null
         if (state.cks == null) return null  // responder hasn't received the first message yet
-        val payload = DoubleRatchet.encrypt(state, text.toByteArray(StandardCharsets.UTF_8))
+        val payload = DoubleRatchet.encrypt(state,
+            PayloadLimits.utf8Bytes(text, ProtocolDoubleRatchet.MAX_PLAINTEXT_BYTES))
         WentuyiSettings.saveRatchet(context, contact.fingerprint, DoubleRatchet.serialize(state))
         payload
     }
@@ -86,7 +89,10 @@ object RatchetSession {
         identity: KeyExchange.Identity,
         contact: KeyExchange.Contact,
     ): Unit = synchronized(lock) {
-        val epoch = DoubleRatchet.newEpoch()
+        requireCurrentTarget(context, identity, contact, requireVerified = false)
+        val previousEpoch = WentuyiSettings.loadRatchet(context, contact.fingerprint)
+            ?.let { DoubleRatchet.deserialize(it).epoch } ?: 0L
+        val epoch = DoubleRatchet.newEpoch(previousEpoch)
         val state = DoubleRatchet.initSender(
             DoubleRatchet.initialRootKey(identity, contact.publicKey, epoch),
             contact.publicKey,
@@ -105,6 +111,7 @@ object RatchetSession {
         contact: KeyExchange.Contact,
         payload: String,
     ): Attempt = synchronized(lock) {
+        requireCurrentTarget(context, identity, contact, requireVerified = false)
         val headerEpoch = DoubleRatchet.peekEpoch(payload) ?: return Attempt.NotForUs
         val stored = WentuyiSettings.loadRatchet(context, contact.fingerprint)
             ?.let { runCatching { DoubleRatchet.deserialize(it) }.getOrNull() }
@@ -112,14 +119,15 @@ object RatchetSession {
         // Path A — we hold this exact session. decrypt() is transactional, so a wrong-contact
         // guess leaves `stored` untouched and we just report NotForUs.
         if (stored != null && stored.epoch == headerEpoch) {
-            return try {
-                val plain = DoubleRatchet.decrypt(stored, payload)
-                WentuyiSettings.saveRatchet(
-                    context, contact.fingerprint, DoubleRatchet.serialize(stored))
-                Attempt.Ok(plain)
+            val plain = try {
+                DoubleRatchet.decrypt(stored, payload)
             } catch (e: Exception) {
-                Attempt.NotForUs
+                return Attempt.NotForUs
             }
+            // A storage failure is not an authentication failure and must be surfaced.
+            // Do not expose plaintext until the advanced receive state is durable.
+            WentuyiSettings.saveRatchet(context, contact.fingerprint, DoubleRatchet.serialize(stored))
+            return Attempt.Ok(plain)
         }
 
         // A retired epoch: refuse rather than re-bootstrap, so ciphertext from a session the
@@ -138,17 +146,34 @@ object RatchetSession {
         } catch (e: Exception) {
             return Attempt.NotForUs  // unusable peer key (low-order, wrong length, …)
         }
-        return try {
-            val plain = DoubleRatchet.decrypt(fresh, payload)
-            WentuyiSettings.saveRatchet(
-                context, contact.fingerprint, DoubleRatchet.serialize(fresh))
-            Attempt.Ok(plain)
+        val plain = try {
+            DoubleRatchet.decrypt(fresh, payload)
         } catch (e: Exception) {
             // Couldn't adopt it. If we hold *some* session with this contact the payload was
             // plausibly theirs and we've fallen off the chain (we reset mid-conversation);
             // with no state at all it's far more likely simply not from this contact.
-            if (stored != null) Attempt.OutOfSync else Attempt.NotForUs
+            return if (stored != null) Attempt.OutOfSync else Attempt.NotForUs
         }
+        WentuyiSettings.saveRatchet(context, contact.fingerprint, DoubleRatchet.serialize(fresh))
+        return Attempt.Ok(plain)
+    }
+
+    /** Reject a target captured before an identity/contact edit while crypto was queued. */
+    private fun requireCurrentTarget(
+        context: Context,
+        identity: KeyExchange.Identity,
+        contact: KeyExchange.Contact,
+        requireVerified: Boolean,
+    ) {
+        val currentIdentity = KeyExchange.loadIdentity(context)
+        check(currentIdentity != null && currentIdentity.publicKey.contentEquals(identity.publicKey)) {
+            "身份已更换，请重新选择联系人后重试"
+        }
+        val currentContact = KeyExchange.findContact(context, contact.fingerprint)
+        check(currentContact != null && currentContact.publicKey.contentEquals(contact.publicKey)) {
+            "联系人已变更，请重新选择"
+        }
+        check(!requireVerified || currentContact.verified) { "请先核对并验证联系人的校验码" }
     }
 
     private fun loadOrBootstrapForSend(
