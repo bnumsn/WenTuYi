@@ -1,12 +1,12 @@
 # 文图易
 
-文图易是一个 Android 输入法 + 跨平台加密协议工具集。当前版本 (v0.7.4，Android 版本码 **15** / **WTY4 + WTY5**) 在 Android 内置软键盘上提供普通输入、文字转普通图片、加密文字、加密二维码，并提供 App 内独立输入后加密的页面；仓库同时提供 JVM 共享协议层和 Windows/Linux CLI，让桌面端与 Android 互通同一套 `WTY4` / `WTY5` / `WTYID1` / `WTYB1` / `WTYP1` 协议，并保留 `WTY1`-`WTY3` 兼容解密。v0.5 系列引入了基于 X25519 公钥的"扫码加好友"端到端加密通道，v0.6 系列进一步引入联系人消息的 Double Ratchet 前向保密。
+文图易是一个 Android 输入法 + 跨平台加密协议工具集。当前版本 (v0.7.5，Android 版本码 **16** / **WTY4 + WTY5**) 在 Android 内置软键盘上提供普通输入、文字转普通图片、加密文字、加密二维码，并提供 App 内独立输入后加密的页面；仓库同时提供 JVM 共享协议层和 Windows/Linux CLI，让桌面端与 Android 互通同一套 `WTY4` / `WTY5` / `WTYID1` / `WTYB1` / `WTYP1` 协议，并保留 `WTY1`-`WTY3` 兼容解密。v0.5 系列引入了基于 X25519 公钥的"扫码加好友"端到端加密通道，v0.6 系列进一步引入联系人消息的 Double Ratchet 前向保密。
 
 **各平台成熟度不一样，按这个读**：Android 功能闭环较完整，仍需真机兼容性与安全验证；Windows/Linux 是**协议 CLI + 输入桥**（发送 WTY4/WTY5，兼容解密 WTY1–5，但不是完整系统输入法）；`platforms/apple` 目前**只有 UI 外壳、没有密码学实现**（`WentuyiCryptoBackend` 是个空 protocol），iOS/macOS 还不能用。
 
-## v0.7.4 安全修复与升级说明
+## v0.7.5 安全修复与升级说明
 
-v0.7.4 汇集本轮安全与可靠性修复，正常 WTY4/WTY5 密文格式及会话密钥派生保持兼容。发布说明见 [docs/releases/v0.7.4.md](docs/releases/v0.7.4.md)；发布前仍须完成 CI 门禁。
+v0.7.5 汇集本轮安全与可靠性修复，正常 WTY4/WTY5 密文格式及会话密钥派生保持兼容。发布说明见 [docs/releases/v0.7.5.md](docs/releases/v0.7.5.md)；发布前仍须完成 CI 门禁。
 
 - 桌面 profile 与原始 `ratchet-*` 命令在跨进程锁内完成读取、加解密和写入；状态经同步写入、原子替换成功后才输出结果，保存失败不输出密文。会话文件绑定双方公钥，更换联系人公钥或本机身份时清除旧会话。
 - **桌面升级需要重置旧会话文件**：旧文件没有双方身份绑定，当前实现拒绝直接使用。profile 用户先核对完整安全码并执行 `peer-verify`，再对相应联系人执行 `peer-reset --peer NAME`；使用 `--state FILE` 的用户用原身份和对方公钥重新执行 `ratchet-init`。完成重置后发送一条新消息恢复通信；旧会话尚未接收的消息可能无法再解密。双方都使用旧桌面状态时，双方先完成重置，再由最后重置的一方先发消息。
@@ -112,7 +112,7 @@ X25519 公钥交换：双方扫描对方身份码后通过 ECDH 得到 32 字节
 
 跨平台版本规划和状态见 [docs/CROSS_PLATFORM.md](docs/CROSS_PLATFORM.md)。Android 是完整 IME；非 Android 平台当前先提供协议 CLI 和平台输入法外壳。
 
-CI（`.github/workflows/ci.yml`）包含协议与桌面回归、CLI 冒烟、IBus 自动发现测试、Android 编译/lint/主题检查，以及 **API 29 / API 34 模拟器上的 `connectedDebugAndroidTest`**。发布流程复用设备测试矩阵，任一门禁失败时停止发布。摄像头与第三方聊天应用的真实兼容性仍需真机测试。
+CI（`.github/workflows/ci.yml`）包含协议与桌面回归、CLI 冒烟、IBus 自动发现测试、Android 编译/lint/主题检查，Windows 真实 OS 上的 PowerShell 5.1/7 CLI 与桥接自动化，以及 **API 29 / API 34 模拟器上的 `connectedDebugAndroidTest`**。发布流程复用 Windows 与设备测试门禁，任一门禁失败时停止发布。摄像头与第三方聊天应用的真实兼容性仍需真机测试。
 
 本轮已在 **API 34 模拟器**通过 **93 项自动化测试和 11 项 UI 验证**，覆盖身份验证迁移与损坏恢复、WTY5 持久化及生命周期、发送回退、32 页二维码与密集二维码解码回归。真实 Android 设备、真实摄像头和第三方聊天宿主的验收仍未完成；Windows 桌面热键和真实窗口交互仍待验收。本地结果不能代替发布 CI，发布以对应版本标签的全部门禁通过为准。
 
@@ -252,7 +252,7 @@ adb shell ime set com.wentuyi.app/.TextImageImeService
 
 ## 版本兼容
 
-- v5 (`WTY5:`) header 在 v0.6.1 由 40 字节增至 48 字节（前置 8 字节会话 epoch），当前**不支持旧 40 字节开发格式**。v0.7.4 保持线上 header 不变，但桌面本地状态增加双方身份绑定，旧本地状态需按 [升级说明](#v074-安全修复与升级说明)重置。
+- v5 (`WTY5:`) header 在 v0.6.1 由 40 字节增至 48 字节（前置 8 字节会话 epoch），当前**不支持旧 40 字节开发格式**。v0.7.5 保持线上 header 不变，但桌面本地状态增加双方身份绑定，旧本地状态需按 [升级说明](#v075-安全修复与升级说明)重置。
 - v4 (`WTY4:`) 是当前默认输出格式（Argon2 参数写入 header）；正常历史默认参数保持兼容，超出当前大小或 KDF 预算的载荷会被拒绝。
 - v3 (`WTY3:`) 仍可被解密（旧版默认；Argon2 m=32/t=3 硬编码）。
 - v2 (`WTY2:`) 与 v1 (`WTY1:`) 文本载荷仍可被解密（PBKDF2 路径保留）。
@@ -301,7 +301,7 @@ adb shell ime set com.wentuyi.app/.TextImageImeService
 ## v0.6.1 修复（全仓评审）
 
 1. **棘轮会话失步后永久失联，且无恢复路径** — 任一方重装 / 清数据 / 用备份码换机后本地棘轮状态丢失，会从同一个确定性根密钥重启，而对端根密钥早已推进：此后双向每条消息都 AEAD 失败且**永不恢复**，双方还分不清这和"消息损坏"。唯一出路是两人同时删好友重加，而 UI 从没提示过。现在 WTY5 header 前置 8 字节**会话 epoch**（header 40 → 48 字节）：收到更新的 epoch 自动重新自举，收到已退休的 epoch 拒绝（防旧会话密文重放进活会话），另加「密钥管理 → 重置加密会话」供自己失步时主动开新会话。协议层、app 持久化层与 CLI 三处都有覆盖测试。
-2. **联系人列表明文存储** — 当时引入 Keystore AES-GCM 包裹联系人列表，读取失败不退化成空列表。但当时的明文兼容读取仍可被降级绕过；v0.7.4 增加 Keystore 迁移标记，并在迁移旧明文列表时清除 `verified`，要求重新核对完整安全码，详见 [升级说明](#v074-安全修复与升级说明)。
+2. **联系人列表明文存储** — 当时引入 Keystore AES-GCM 包裹联系人列表，读取失败不退化成空列表。但当时的明文兼容读取仍可被降级绕过；v0.7.5 增加 Keystore 迁移标记，并在迁移旧明文列表时清除 `verified`，要求重新核对完整安全码，详见 [升级说明](#v075-安全修复与升级说明)。
 3. **桌面端收不到 Android 发的棘轮消息** — Android 对已验证联系人默认发 WTY5，而 desktop-cli 只实现到 WTY4，"验证得越认真越用不了"。现补齐 `ratchet-init` / `ratchet-encrypt` / `ratchet-decrypt` / `ratchet-info`，会话存于 `--state` 文件（0600），失步恢复规则与 Android 一致。
 4. **没有 CI** — 加 `.github/workflows/ci.yml`：协议核心单测 + CLI 端到端冒烟 + Android 编译/lint。另加 `scripts/cli-smoke.sh`，用真实 CLI 二进制跑 13 项断言（SAS 双向一致、WTY4 中文往返、错误密钥拒绝、会话密钥、棘轮双向、乱序、失步恢复、旧 epoch 重放拒绝、QR 分片重组）。
 5. **解密明文的落盘窗口** — 屏幕解密的明文文本原本写进 SharedPreferences，无人消费就一直留在磁盘上；改为仅存进程内存，进程结束即消失。解密出的明文图片从 24 小时缩短到 10 分钟（密文/待分享图仍 24 小时），并在解密入口主动清扫。

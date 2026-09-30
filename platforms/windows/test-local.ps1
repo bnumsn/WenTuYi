@@ -21,15 +21,31 @@ $bobQr = Get-CliField $bob "identityQr="
 $sessionPayload = & $Cli session-encrypt --backup $aliceBackup --peer-qr $bobQr "windows session"
 $sessionPlain = & $Cli session-decrypt --backup $bobBackup --peer-qr $aliceQr $sessionPayload
 if ($sessionPlain -ne "windows session") { throw "session round trip failed: $sessionPlain" }
-# One pipeline object goes through raw UTF-8 stdin; preserve spaces, CRLF and final LF.
-$boundaryText = " `t" + [char]0x4e2d + [char]0x6587 + "`r`nsecond line `t`n`n"
+# One pipeline object goes through raw UTF-8 stdin; preserve Unicode, spaces and CRLF.
+# A genuine U+FEFF in the message must survive; the transport must not add or remove one.
+$boundaryText = ([char]0xfeff).ToString() + " `t" + [char]0x4e2d + [char]0x6587 + "`r`nsecond line `t`n`n"
 $oldPassphrase = $env:WENTUYI_PASSPHRASE
+$oldInputEncoding = [Console]::InputEncoding
 try {
     $env:WENTUYI_PASSPHRASE = "windows-boundary-test"
-    $boundaryPayload = $boundaryText | & $Cli send --stdin
-    $boundaryPlain = $boundaryPayload | & $Cli receive --stdin
-    if ($boundaryPlain -cne $boundaryText) { throw "UTF-8/whitespace round trip failed" }
+    foreach ($emitBom in @($false, $true)) {
+        # PS 5.1's .NET Framework pipe writer eagerly emits Console.InputEncoding's BOM.
+        [Console]::InputEncoding = New-Object System.Text.UTF8Encoding $emitBom
+        $expectedPreambleLength = [Console]::InputEncoding.GetPreamble().Length
+        $boundaryPayload = $boundaryText | & $Cli send --stdin
+        if ($LASTEXITCODE -ne 0) { throw "UTF-8 stdin encryption failed" }
+        if ([Console]::InputEncoding.GetPreamble().Length -ne $expectedPreambleLength) {
+            throw "CLI did not restore the console input encoding after send"
+        }
+        $boundaryPlain = $boundaryPayload | & $Cli receive --stdin
+        if ($LASTEXITCODE -ne 0) { throw "UTF-8 stdin decryption failed" }
+        if ($boundaryPlain -cne $boundaryText) { throw "UTF-8/whitespace round trip failed" }
+        if ([Console]::InputEncoding.GetPreamble().Length -ne $expectedPreambleLength) {
+            throw "CLI did not restore the console input encoding after receive"
+        }
+    }
 } finally {
+    [Console]::InputEncoding = $oldInputEncoding
     $env:WENTUYI_PASSPHRASE = $oldPassphrase
 }
 & (Join-Path $ScriptDir "test-bridges.ps1")

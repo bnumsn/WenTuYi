@@ -67,14 +67,30 @@ function Invoke-NativeUtf8([string] $Exe, [string[]] $Argv, [string[]] $StdinLin
     $psi.StandardErrorEncoding  = New-Object System.Text.UTF8Encoding $false
     $hasStdin = $StdinLines -and $StdinLines.Count -gt 0
     if ($hasStdin) { $psi.RedirectStandardInput = $true }
-    $p = [System.Diagnostics.Process]::Start($psi)
+    # .NET Framework creates StandardInput with Console.InputEncoding and immediately
+    # enables AutoFlush. With a BOM-emitting encoding it writes a preamble before our
+    # raw bytes, corrupting ciphertext and adding an invisible character to plaintext.
+    # Select no-BOM UTF-8 only while the pipe writer is created; preserve the host setting.
+    $previousInputEncoding = [Console]::InputEncoding
+    try {
+        if ($hasStdin) { [Console]::InputEncoding = New-Object System.Text.UTF8Encoding $false }
+        $p = [System.Diagnostics.Process]::Start($psi)
+    } finally {
+        if ($hasStdin) { [Console]::InputEncoding = $previousInputEncoding }
+    }
     if ($hasStdin) {
         $bytes = [System.Text.Encoding]::UTF8.GetBytes(($StdinLines -join "`n"))
         $p.StandardInput.BaseStream.Write($bytes, 0, $bytes.Length)
         $p.StandardInput.BaseStream.Flush()
         $p.StandardInput.Close()
     }
-    $out = $p.StandardOutput.ReadToEnd()
+    # Framework's built-in stdout reader detects BOMs even with an explicit encoding.
+    # Decrypted stdout is message data: a leading U+FEFF must remain a real character.
+    $stdoutEncoding = New-Object System.Text.UTF8Encoding $false
+    $stdoutReader = New-Object System.IO.StreamReader -ArgumentList @(
+        $p.StandardOutput.BaseStream, $stdoutEncoding, $false)
+    try { $out = $stdoutReader.ReadToEnd() }
+    finally { $stdoutReader.Dispose() }
     $err = $p.StandardError.ReadToEnd()
     $p.WaitForExit()
     if ($err) { [Console]::Error.Write($err) }
